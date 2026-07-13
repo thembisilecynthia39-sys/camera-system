@@ -1,0 +1,5 @@
+2026-07-07 00:02:51 - NowcoderSearcher - INFO - 开始搜索关键词: Qt C++ Python PySide6 多摄像头 面试
+2026-07-07 00:02:51 - NowcoderSearcher - INFO - 正在抓取第 1 页: Qt C++ Python PySide6 多摄像头 面试
+2026-07-07 00:02:53 - NowcoderSearcher - INFO - 第 1 页 JSON 解析未发现结果，尝试 HTML 直接解析
+2026-07-07 00:02:53 - NowcoderSearcher - WARNING - 第 1 页没有找到结果
+2026-07-07 00:02:53 - NowcoderSearcher - ERROR - 检测到可能的反爬验证，请检查网络或更换 IP

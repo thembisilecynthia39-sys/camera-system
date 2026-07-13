@@ -1,0 +1,4 @@
+# The DECXIN 1bcf:2d52 camera exposes a broken USB Audio interface whose
+# firmware rejects the sample-rate requests made by snd-usb-audio.  Unbind
+# only its Audio-class interfaces; the UVC video interfaces remain active.
+ACTION=="add", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_interface", ATTR{bInterfaceClass}=="01", ATTRS{idVendor}=="1bcf", ATTRS{idProduct}=="2d52", RUN+="/bin/sh -c 'echo -n %k > /sys/bus/usb/drivers/snd-usb-audio/unbind'"

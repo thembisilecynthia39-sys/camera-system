@@ -1,0 +1,99 @@
+[project]
+name = "multiwebcam"
+version = "0.2.0"
+description = "Record synchronized webcam footage"
+authors = [{name = "Mac Prible", email = "prible@gmail.com"}]
+license = { text = "BSD-2-Clause" }
+readme = "README.md"
+requires-python = ">=3.10,<3.13"
+
+dependencies = [
+    "pyside6==6.7.3",
+    "rtoml>=0.9.0",
+    "pandas>=2.1.4",
+    "platformdirs>=4.0.0",
+    "av>=12.0.0",
+    "pillow>=12.1.0",
+]
+
+[project.urls]
+repository = "https://github.com/mprib/multiwebcam"
+
+[project.optional-dependencies]
+desktop = [
+    "opencv-contrib-python>=4.8.1",
+]
+jetson = [
+    "ultralytics>=8.3.0",
+]
+fluent = [
+    "PyQt-Fluent-Widgets>=1.11.2",
+]
+
+[project.scripts]
+multiwebcam = "multiwebcam.__main__:main"
+mwc = "multiwebcam.__main__:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/multiwebcam"]
+
+[tool.hatch.build.targets.wheel.sources]
+"src" = ""
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+unsafe-fixes = true
+exclude = [
+    ".git",
+    ".venv",
+    "__pypackages__",
+    "build",
+    "dist",
+    "dev",
+    "multiwebcam_legacy",
+    "scripts/pyav_exploration",
+    "scripts/widget_visualization",
+]
+
+[tool.ruff.lint]
+select = ["E", "F", "W"]
+dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
+
+[tool.ruff.lint.mccabe]
+max-complexity = 10
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "lf"
+
+[tool.basedpyright]
+typeCheckingMode = "basic"
+exclude = ["dist", "build", ".venv", "dev"]
+reportMissingTypeStubs = false
+reportAny = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+
+[dependency-groups]
+dev = [
+    "pytest>=7.3.0",
+    "ipykernel>=6.22.0",
+    "ruff>=0.6.5",
+    "basedpyright>=1.18.0",
+]
+
+[tool.uv]
+required-environments = [
+    "sys_platform == 'linux' and platform_machine == 'aarch64'",
+]

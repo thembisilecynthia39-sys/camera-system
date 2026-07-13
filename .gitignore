@@ -1,0 +1,50 @@
+.venv*
+*.pyc
+dist*
+.vscode*
+*.lock
+
+# Claude Code
+.claude/
+
+# Working documents (symlinked from dotfiles)
+tasks.json
+progress.txt
+CLAUDE.md
+
+# Test artifacts
+tests/tmp/
+tmp/
+
+# Widget visualization output (screenshots)
+scripts/widget_visualization/output/
+
+# Test project directories (created by scripts)
+scripts/test_project/
+scripts/widget_visualization/output/test_project/
+
+# PyAV exploration temp files
+scripts/pyav_exploration/tmp/
+
+# local runtime
+captures/
+recordings/
+multiwebcam.toml
+multiwebcam.toml.old
+
+# backups
+*.bak
+*.old
+
+# Jetson local inspect outputs
+t-inspect-*
+
+# model artifacts
+*.engine
+models/*.engine
+*.ply
+
+# Local Codex/agent skill repositories
+scripts/agent-skills/
+scripts/code-review-skill/
+scripts/ui-ux-pro-max-skill/

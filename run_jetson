@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+JETSON_SITE_PACKAGES="$PROJECT_ROOT/.venv-jetson/lib/python3.8/site-packages"
+
+export PYTHONPATH="$PROJECT_ROOT/src:$JETSON_SITE_PACKAGES${PYTHONPATH:+:$PYTHONPATH}"
+export MPLCONFIGDIR="${MPLCONFIGDIR:-/tmp/multiwebcam-mpl}"
+export QT_QPA_PLATFORM="${QT_QPA_PLATFORM:-xcb}"
+export QT_XCB_GL_INTEGRATION="${QT_XCB_GL_INTEGRATION:-xcb_glx}"
+export __GLX_VENDOR_LIBRARY_NAME="${__GLX_VENDOR_LIBRARY_NAME:-nvidia}"
+
+cd "$PROJECT_ROOT"
+exec /usr/bin/python3 -m multiwebcam "$@"
