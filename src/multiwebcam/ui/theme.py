@@ -10,30 +10,90 @@ from __future__ import annotations
 from PySide6.QtWidgets import QWidget
 
 
+class Primitive:
+    """Raw design values; use semantic roles below in widgets and stylesheets."""
+
+    INK_950 = "#071117"
+    INK_925 = "#0B1821"
+    INK_900 = "#10232E"
+    INK_850 = "#162D39"
+    INK_800 = "#1D3947"
+    INK_750 = "#274857"
+    BORDER = "#27404D"
+    BORDER_STRONG = "#426170"
+    TEXT = "#F1F7F8"
+    TEXT_MUTED = "#B2C4CC"
+    TEXT_FAINT = "#7D949F"
+    TEAL_700 = "#138E83"
+    TEAL_600 = "#1EAF9F"
+    TEAL_500 = "#36D0BE"
+    TEAL_400 = "#76E4D5"
+    TEAL_950 = "#0B2A2A"
+    SKY_500 = "#66B8F3"
+    RED_700 = "#B74153"
+    RED_600 = "#D85868"
+    RED_500 = "#EB7180"
+    GREEN_500 = "#4BCD96"
+    GREEN_950 = "#10352D"
+    GREEN_700 = "#2D7259"
+    AMBER_500 = "#EABA69"
+    AMBER_950 = "#3A2D1A"
+    AMBER_700 = "#8A6631"
+    RED_950 = "#3A2028"
+    RED_800 = "#87404D"
+    INK_DISABLED = "#0D1B23"
+    BORDER_DISABLED = "#223640"
+    BORDER_INTERACTIVE = "#5B8796"
+    WHITE = "#FFFFFF"
+
+
 class Palette:
     """Semantic colour roles for the capture workstation."""
 
-    BACKGROUND = "#181A1D"
-    SURFACE = "#202328"
-    SURFACE_RAISED = "#292D33"
-    SURFACE_SUNKEN = "#111315"
-    SURFACE_HOVER = "#30343A"
-    BORDER = "#34383E"
-    BORDER_STRONG = "#4A5058"
-    TEXT = "#E8EAED"
-    TEXT_MUTED = "#A7ABB1"
-    TEXT_FAINT = "#777C84"
-    INTERACTIVE = "#4D86BA"
-    INTERACTIVE_HOVER = "#6398C8"
-    INTERACTIVE_PRESSED = "#3D6F9C"
-    ON_INTERACTIVE = "#FFFFFF"
-    RECORD = "#C85050"
-    RECORD_HOVER = "#D65D5D"
-    RECORD_PRESSED = "#A84242"
-    SUCCESS = "#68A67E"
-    WARNING = "#C89B52"
-    DANGER = "#D36A6A"
-    DISABLED = "#62666C"
+    BACKGROUND = Primitive.INK_950
+    SURFACE = Primitive.INK_925
+    SURFACE_RAISED = Primitive.INK_850
+    SURFACE_ELEVATED = Primitive.INK_800
+    SURFACE_SUNKEN = Primitive.INK_950
+    SURFACE_HOVER = Primitive.INK_750
+    BORDER = Primitive.BORDER
+    BORDER_STRONG = Primitive.BORDER_STRONG
+    TEXT = Primitive.TEXT
+    TEXT_MUTED = Primitive.TEXT_MUTED
+    TEXT_FAINT = Primitive.TEXT_FAINT
+    INTERACTIVE = Primitive.TEAL_600
+    INTERACTIVE_HOVER = Primitive.TEAL_500
+    INTERACTIVE_PRESSED = Primitive.TEAL_700
+    ON_INTERACTIVE = Primitive.INK_950
+    RECORD = Primitive.RED_600
+    RECORD_HOVER = Primitive.RED_500
+    RECORD_PRESSED = Primitive.RED_700
+    RECORD_ON = Primitive.INK_950
+    SUCCESS = Primitive.GREEN_500
+    WARNING = Primitive.AMBER_500
+    DANGER = Primitive.RED_500
+    INFO = Primitive.SKY_500
+    DISABLED = Primitive.TEXT_FAINT
+
+    # Component semantic roles.
+    TOP_NAV = Primitive.INK_925
+    VIDEO_BORDER = Primitive.INK_800
+    IGNORED_VIDEO = Primitive.INK_900
+    CHIP_BACKGROUND = Primitive.INK_800
+    CHIP_BORDER = Primitive.BORDER_STRONG
+    ACCENT_SURFACE = Primitive.TEAL_950
+    ACCENT_BORDER = Primitive.TEAL_700
+    SUCCESS_SURFACE = Primitive.GREEN_950
+    SUCCESS_BORDER = Primitive.GREEN_700
+    WARNING_SURFACE = Primitive.AMBER_950
+    WARNING_BORDER = Primitive.AMBER_700
+    DANGER_SURFACE = Primitive.RED_950
+    DANGER_BORDER = Primitive.RED_800
+    DISABLED_SURFACE = Primitive.INK_DISABLED
+    DISABLED_BORDER = Primitive.BORDER_DISABLED
+    INPUT_HOVER_BORDER = Primitive.BORDER_INTERACTIVE
+    SLIDER_TRACK = Primitive.INK_800
+    SLIDER_HANDLE_BORDER = Primitive.TEAL_400
 
 
 class Spacing:
@@ -46,9 +106,9 @@ class Spacing:
 
 
 class Radius:
-    CONTROL = 3
-    CARD = 4
-    PANEL = 0
+    CONTROL = 7
+    CARD = 10
+    PANEL = 12
 
 
 class TypeScale:
@@ -86,7 +146,7 @@ def app_stylesheet() -> str:
             background: transparent;
         }}
         QFrame#topNavigation {{
-            background: #1D2024;
+            background: {Palette.TOP_NAV};
             border: none;
             border-bottom: 1px solid {Palette.BORDER};
             border-radius: 0;
@@ -95,13 +155,12 @@ def app_stylesheet() -> str:
         QFrame#sidePanel {{
             background: {Palette.SURFACE};
             border: 1px solid {Palette.BORDER};
-            border-radius: 10px;
+            border-radius: {Radius.PANEL}px;
         }}
         QFrame#globalStatusBar {{
-            background: transparent;
-            border: none;
-            border-bottom: 1px solid {Palette.BORDER};
-            border-radius: 0;
+            background: {Palette.SURFACE};
+            border: 1px solid {Palette.BORDER};
+            border-radius: {Radius.PANEL}px;
         }}
         QFrame#statusBadge {{
             background: transparent;
@@ -134,12 +193,15 @@ def app_stylesheet() -> str:
         QFrame#statusBand {{
             background: {Palette.SURFACE};
             border: 1px solid {Palette.BORDER};
-            border-radius: 12px;
+            border-radius: {Radius.PANEL}px;
         }}
         QFrame#cameraTile {{
             background: {Palette.SURFACE};
             border: 1px solid {Palette.BORDER};
             border-radius: {Radius.CARD}px;
+        }}
+        QFrame#cameraTile:hover {{
+            border-color: {Palette.BORDER_STRONG};
         }}
         QFrame#cameraTile[ignored="true"] {{
             background: {Palette.SURFACE};
@@ -147,29 +209,29 @@ def app_stylesheet() -> str:
         }}
         QFrame#videoShell {{
             background: {Palette.SURFACE_SUNKEN};
-            border: 1px solid #2C3035;
-            border-radius: 3px;
+            border: 1px solid {Palette.VIDEO_BORDER};
+            border-radius: {Radius.CONTROL}px;
         }}
         QLabel#videoPreview {{
             background: {Palette.SURFACE_SUNKEN};
             color: {Palette.TEXT_MUTED};
             border: none;
-            border-radius: 2px;
+            border-radius: {Radius.CONTROL}px;
         }}
         QLabel#videoPreview[ignored="true"] {{
-            background: #25282C;
+            background: {Palette.IGNORED_VIDEO};
             border: 1px dashed {Palette.BORDER};
         }}
         QFrame#modelViewportControls {{
-            background: #D90B1118;
+            background: rgba(7, 17, 23, 230);
             border: 1px solid {Palette.BORDER_STRONG};
-            border-radius: 9px;
+            border-radius: {Radius.PANEL}px;
         }}
         QFrame#metricStrip {{
-            background: transparent;
+            background: {Palette.SURFACE_RAISED};
             border: none;
             border-top: 1px solid {Palette.BORDER};
-            border-radius: 0;
+            border-radius: {Radius.CONTROL}px;
         }}
         QFrame#sectionDivider {{
             background: {Palette.BORDER};
@@ -194,6 +256,9 @@ def app_stylesheet() -> str:
             border-radius: 4px;
             min-height: 30px;
         }}
+        QScrollBar::handle:vertical:hover {{
+            background: {Palette.INTERACTIVE};
+        }}
         QScrollBar::add-line:vertical,
         QScrollBar::sub-line:vertical {{
             height: 0;
@@ -202,14 +267,14 @@ def app_stylesheet() -> str:
             background: transparent;
         }}
         QLabel#brandMark {{
-            color: {Palette.TEXT_MUTED};
-            font-size: 13px;
-            font-weight: 600;
+            color: {Palette.INTERACTIVE_HOVER};
+            font-size: 12px;
+            font-weight: 700;
         }}
         QLabel#pageTitle {{
             color: {Palette.TEXT};
-            font-size: {TypeScale.TITLE}px;
-            font-weight: 600;
+            font-size: 22px;
+            font-weight: 700;
         }}
         QLabel#sectionTitle {{
             color: {Palette.TEXT};
@@ -234,40 +299,40 @@ def app_stylesheet() -> str:
         QLabel#sideSectionTitle {{
             color: {Palette.TEXT};
             font-size: {TypeScale.SECTION}px;
-            font-weight: 600;
+            font-weight: 700;
             padding-top: 3px;
         }}
         QLabel#cameraChip {{
-            background: #30343A;
+            background: {Palette.CHIP_BACKGROUND};
             color: {Palette.TEXT};
-            border: 1px solid {Palette.BORDER_STRONG};
-            border-radius: 3px;
-            padding: 3px 7px;
+            border: 1px solid {Palette.CHIP_BORDER};
+            border-radius: {Radius.CONTROL}px;
+            padding: 4px 8px;
             font-size: 12px;
-            font-weight: 600;
+            font-weight: 700;
         }}
         QLabel#stateChip {{
-            background: transparent;
+            background: {Palette.SUCCESS_SURFACE};
             color: {Palette.SUCCESS};
-            border: none;
-            border-radius: 0;
-            padding: 3px 4px;
+            border: 1px solid {Palette.SUCCESS_BORDER};
+            border-radius: 9px;
+            padding: 3px 8px;
             font-size: 12px;
             font-weight: 600;
         }}
         QLabel#stateChip[status="muted"] {{
-            background: transparent;
+            background: {Palette.SURFACE_RAISED};
             color: {Palette.TEXT_MUTED};
-            border: none;
+            border-color: {Palette.BORDER};
         }}
         QLabel#liveBadge {{
-            background: #153529;
+            background: {Palette.SUCCESS_SURFACE};
             color: {Palette.SUCCESS};
-            border: 1px solid #27664F;
-            border-radius: 8px;
-            padding: 5px 10px;
-            font-size: 11px;
-            font-weight: 800;
+            border: 1px solid {Palette.SUCCESS_BORDER};
+            border-radius: 10px;
+            padding: 6px 11px;
+            font-size: 12px;
+            font-weight: 700;
         }}
         QLabel#metaLabel,
         QLabel#captionLabel {{
@@ -287,62 +352,73 @@ def app_stylesheet() -> str:
             color: {Palette.TEXT_FAINT};
         }}
         QLabel#statusPill {{
-            background: #25282D;
+            background: {Palette.SURFACE_ELEVATED};
             color: {Palette.TEXT};
             border: 1px solid {Palette.BORDER};
-            border-radius: 3px;
-            padding: 7px 9px;
+            border-radius: {Radius.CONTROL}px;
+            padding: 8px 10px;
             font-weight: 500;
         }}
         QLabel#statusPill[status="muted"] {{
             color: {Palette.TEXT_MUTED};
         }}
         QLabel#statusPill[status="good"] {{
-            background: #252B27;
+            background: {Palette.SUCCESS_SURFACE};
             color: {Palette.SUCCESS};
-            border-color: #3E5546;
+            border-color: {Palette.SUCCESS_BORDER};
         }}
         QLabel#statusPill[status="warn"] {{
-            background: #2D2922;
+            background: {Palette.WARNING_SURFACE};
             color: {Palette.WARNING};
-            border-color: #5D4C32;
+            border-color: {Palette.WARNING_BORDER};
         }}
         QLabel#statusPill[status="bad"] {{
-            background: #302426;
+            background: {Palette.DANGER_SURFACE};
             color: {Palette.DANGER};
-            border-color: #613D42;
+            border-color: {Palette.DANGER_BORDER};
         }}
         QLabel#overviewStatus {{
-            background: transparent;
+            background: {Palette.SURFACE_RAISED};
             color: {Palette.TEXT};
-            border: none;
-            border-bottom: 1px solid {Palette.BORDER};
-            border-radius: 0;
-            padding: 9px 2px;
+            border: 1px solid {Palette.BORDER};
+            border-radius: {Radius.CONTROL}px;
+            padding: 9px 10px;
             font-weight: 500;
         }}
         QLabel#overviewStatus[status="muted"] {{ color: {Palette.TEXT_MUTED}; }}
-        QLabel#overviewStatus[status="good"] {{ color: {Palette.SUCCESS}; }}
-        QLabel#overviewStatus[status="warn"] {{ color: {Palette.WARNING}; }}
-        QLabel#overviewStatus[status="bad"] {{ color: {Palette.DANGER}; }}
+        QLabel#overviewStatus[status="good"] {{
+            background: {Palette.SUCCESS_SURFACE};
+            border-color: {Palette.SUCCESS_BORDER};
+            color: {Palette.SUCCESS};
+        }}
+        QLabel#overviewStatus[status="warn"] {{
+            background: {Palette.WARNING_SURFACE};
+            border-color: {Palette.WARNING_BORDER};
+            color: {Palette.WARNING};
+        }}
+        QLabel#overviewStatus[status="bad"] {{
+            background: {Palette.DANGER_SURFACE};
+            border-color: {Palette.DANGER_BORDER};
+            color: {Palette.DANGER};
+        }}
         QLabel#timerLabel {{
             background: {Palette.SURFACE_SUNKEN};
             color: {Palette.TEXT};
             border: 1px solid {Palette.BORDER_STRONG};
-            border-radius: 3px;
-            padding: 9px 12px;
+            border-radius: {Radius.CONTROL}px;
+            padding: 10px 12px;
             font-family: "JetBrains Mono", "DejaVu Sans Mono", monospace;
-            font-size: 18px;
+            font-size: 20px;
             font-weight: 700;
         }}
         QLabel#destinationPath {{
             background: {Palette.SURFACE_SUNKEN};
             color: {Palette.TEXT_MUTED};
             border: 1px solid {Palette.BORDER};
-            border-radius: 3px;
+            border-radius: {Radius.CONTROL}px;
             padding: 9px 10px;
             font-family: "JetBrains Mono", "DejaVu Sans Mono", monospace;
-            font-size: 11px;
+            font-size: 12px;
         }}
         QLineEdit,
         QComboBox,
@@ -350,16 +426,16 @@ def app_stylesheet() -> str:
             background: {Palette.SURFACE_RAISED};
             color: {Palette.TEXT};
             border: 1px solid {Palette.BORDER_STRONG};
-            border-radius: 3px;
-            min-height: 34px;
-            padding: 4px 9px;
+            border-radius: {Radius.CONTROL}px;
+            min-height: 36px;
+            padding: 5px 10px;
             selection-background-color: {Palette.INTERACTIVE};
             selection-color: {Palette.ON_INTERACTIVE};
         }}
         QLineEdit:hover,
         QComboBox:hover,
         QSpinBox:hover {{
-            border-color: #587085;
+            border-color: {Palette.INPUT_HOVER_BORDER};
         }}
         QLineEdit:focus,
         QComboBox:focus,
@@ -369,9 +445,9 @@ def app_stylesheet() -> str:
         QLineEdit:disabled,
         QComboBox:disabled,
         QSpinBox:disabled {{
-            background: #0E151D;
+            background: {Palette.DISABLED_SURFACE};
             color: {Palette.DISABLED};
-            border-color: #24313D;
+            border-color: {Palette.DISABLED_BORDER};
         }}
         QComboBox QAbstractItemView {{
             background: {Palette.SURFACE_RAISED};
@@ -385,14 +461,14 @@ def app_stylesheet() -> str:
             background: {Palette.SURFACE_RAISED};
             color: {Palette.TEXT};
             border: 1px solid {Palette.BORDER_STRONG};
-            border-radius: 3px;
-            min-height: 34px;
-            padding: 6px 14px;
+            border-radius: {Radius.CONTROL}px;
+            min-height: 36px;
+            padding: 7px 15px;
             font-weight: 600;
         }}
         QPushButton:hover {{
             background: {Palette.SURFACE_HOVER};
-            border-color: #60798F;
+            border-color: {Palette.INPUT_HOVER_BORDER};
         }}
         QPushButton:focus {{
             border: 2px solid {Palette.INTERACTIVE};
@@ -401,15 +477,15 @@ def app_stylesheet() -> str:
             background: {Palette.SURFACE_SUNKEN};
         }}
         QPushButton:disabled {{
-            background: #0E151D;
+            background: {Palette.DISABLED_SURFACE};
             color: {Palette.DISABLED};
-            border-color: #24313D;
+            border-color: {Palette.DISABLED_BORDER};
         }}
         QPushButton[variant="primary"] {{
             background: {Palette.INTERACTIVE};
             border-color: {Palette.INTERACTIVE};
             color: {Palette.ON_INTERACTIVE};
-            font-weight: 750;
+            font-weight: 700;
         }}
         QPushButton[variant="primary"]:hover {{
             background: {Palette.INTERACTIVE_HOVER};
@@ -422,13 +498,13 @@ def app_stylesheet() -> str:
         QPushButton[variant="record"] {{
             background: {Palette.RECORD};
             border-color: {Palette.RECORD};
-            color: #FFFFFF;
-            font-weight: 750;
+            color: {Palette.RECORD_ON};
+            font-weight: 700;
         }}
         QPushButton[variant="record"]:hover {{
             background: {Palette.RECORD_HOVER};
             border-color: {Palette.RECORD_HOVER};
-            color: #FFFFFF;
+            color: {Palette.RECORD_ON};
         }}
         QPushButton[variant="record"]:pressed {{
             background: {Palette.RECORD_PRESSED};
@@ -460,10 +536,10 @@ def app_stylesheet() -> str:
             color: {Palette.TEXT};
         }}
         QPushButton#navButton:checked {{
-            background: #203C3A;
-            border-color: #2E6D67;
+            background: {Palette.ACCENT_SURFACE};
+            border-color: {Palette.ACCENT_BORDER};
             border-bottom: 2px solid {Palette.INTERACTIVE};
-            color: {Palette.TEXT};
+            color: {Palette.INTERACTIVE_HOVER};
             font-weight: 600;
         }}
         QPushButton#tileFocusButton {{
@@ -494,14 +570,14 @@ def app_stylesheet() -> str:
             border-color: {Palette.INTERACTIVE};
         }}
         QSlider::groove:horizontal {{
-            background: #263543;
+            background: {Palette.SLIDER_TRACK};
             border: none;
             border-radius: 3px;
             height: 6px;
         }}
         QSlider::handle:horizontal {{
             background: {Palette.INTERACTIVE};
-            border: 2px solid #B8FFF2;
+            border: 2px solid {Palette.SLIDER_HANDLE_BORDER};
             border-radius: 8px;
             width: 16px;
             margin: -6px 0;

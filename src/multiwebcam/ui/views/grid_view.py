@@ -156,7 +156,7 @@ class GridView(QWidget):
         self._panel_scroll.setObjectName("sidePanelScroll")
         self._panel_scroll.setWidgetResizable(True)
         self._panel_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self._panel_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self._panel_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._panel_scroll.setWidget(self._panel_stack)
         self._panel_scroll.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
         side_layout.addWidget(self._panel_scroll, stretch=1)
@@ -422,6 +422,11 @@ class GridView(QWidget):
         self._nav_label.setVisible(not compact)
         self._page_title.setVisible(not narrow)
         self._panel_scroll.setVisible(True)
+        self._panel_scroll.setVerticalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded
+            if event.size().height() < 760
+            else Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
         for button in self._nav_buttons:
             button.setText("" if narrow else button.property("fullText"))
         self._system_status.set_compact(compact)
@@ -733,6 +738,13 @@ class GridView(QWidget):
             tile.set_error(message)
             self._errored_source_ids.add(source_id)
             self._refresh_camera_status()
+
+    def clear_source_error(self, source_id: int) -> None:
+        """Mark a source as connected again after a hotplug refresh."""
+        if source_id not in self._tiles or source_id not in self._errored_source_ids:
+            return
+        self._errored_source_ids.discard(source_id)
+        self._refresh_camera_status()
 
     def set_storage_available(self, available_bytes: int) -> None:
         self._system_status.set_storage_available(available_bytes)
