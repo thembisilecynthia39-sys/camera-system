@@ -190,4 +190,4 @@ class SubprocessObjectDetector:
 
     @staticmethod
     def _default_service_script() -> Path:
-        return Path(__file__).resolve().parents[3] / "scripts" / "inference_service.py"
+        return Path(__file__).resolve().parents[3] / "scripts" / "services" / "inference_service.py"

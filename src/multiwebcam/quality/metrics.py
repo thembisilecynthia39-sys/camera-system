@@ -1,9 +1,10 @@
-from __future__ import annotations
 """Lightweight realtime quality metrics for image capture.
 
 These metrics are meant for live guidance before saving frames for COLMAP/3DGS.
 They intentionally avoid slow reconstruction steps.
 """
+
+from __future__ import annotations
 
 
 from dataclasses import dataclass
@@ -19,6 +20,12 @@ class QualityLevel(str, Enum):
     GOOD = "good"
     WARN = "warn"
     BAD = "bad"
+
+
+# The capture target should remain a subject inside the frame, not the frame
+# itself.  Keep this shared guard consistent across heuristic, YOLO and UI
+# rendering paths so a large false positive cannot become a giant overlay.
+MAX_PRIMARY_OBJECT_AREA_RATIO = 0.55
 
 
 @dataclass(frozen=True)
@@ -336,7 +343,7 @@ def _detect_primary_object(gray: np.ndarray) -> ObjectRegion | None:
         x, y, w, h = cv2.boundingRect(contour)
         bbox_area = float(w * h)
         area_ratio = bbox_area / frame_area
-        if area_ratio < 0.002 or area_ratio > 0.90:
+        if area_ratio < 0.002 or area_ratio > MAX_PRIMARY_OBJECT_AREA_RATIO:
             continue
 
         contour_area = max(1.0, cv2.contourArea(contour))

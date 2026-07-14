@@ -4,12 +4,100 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QPixmap
-from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QSizePolicy, QWidget
+from PySide6.QtWidgets import (
+    QAbstractSpinBox,
+    QComboBox,
+    QDoubleSpinBox,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QSizePolicy,
+    QSlider,
+    QSpinBox,
+    QWidget,
+)
 
 
 _ICON_DIR = Path(__file__).with_name("icons")
+
+
+class _FocusWheelGuard:
+    """Never let a wheel gesture mutate a value control.
+
+    Wheel events are ignored so a containing scroll area can consume them.
+    Values must be changed through an explicit click, drag, or text entry.
+    """
+
+    def wheelEvent(self, event) -> None:
+        event.ignore()
+
+
+class GuardedComboBox(_FocusWheelGuard, QComboBox):
+    """Combo box that never changes from a wheel gesture."""
+
+
+class GuardedSpinBox(_FocusWheelGuard, QSpinBox):
+    """Integer spin box protected from all wheel changes."""
+
+
+class GuardedDoubleSpinBox(_FocusWheelGuard, QDoubleSpinBox):
+    """Floating-point spin box protected from all wheel changes."""
+
+
+class GuardedSlider(_FocusWheelGuard, QSlider):
+    """Slider that changes only through drag or keyboard input."""
+
+
+class NumericStepper(QWidget):
+    """Compact minus/value/plus control used for deliberate settings changes."""
+
+    def __init__(self, *, decimals: int = 0, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.setObjectName("numericStepper")
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        self._minus = QPushButton("−")
+        self._minus.setObjectName("stepperButton")
+        self._minus.setAccessibleName("减少")
+        self._plus = QPushButton("+")
+        self._plus.setObjectName("stepperButton")
+        self._plus.setAccessibleName("增加")
+        if decimals:
+            self._editor = GuardedDoubleSpinBox()
+            self._editor.setDecimals(decimals)
+        else:
+            self._editor = GuardedSpinBox()
+        self._editor.setObjectName("stepperEditor")
+        self._editor.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
+        self._editor.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._minus.clicked.connect(self._editor.stepDown)
+        self._plus.clicked.connect(self._editor.stepUp)
+        layout.addWidget(self._minus)
+        layout.addWidget(self._editor, stretch=1)
+        layout.addWidget(self._plus)
+
+    def setRange(self, minimum, maximum) -> None:
+        self._editor.setRange(minimum, maximum)
+
+    def setSingleStep(self, step) -> None:
+        self._editor.setSingleStep(step)
+
+    def setSuffix(self, suffix: str) -> None:
+        self._editor.setSuffix(suffix)
+
+    def setDecimals(self, decimals: int) -> None:
+        if isinstance(self._editor, QDoubleSpinBox):
+            self._editor.setDecimals(decimals)
+
+    def setValue(self, value) -> None:
+        self._editor.setValue(value)
+
+    def value(self):
+        return self._editor.value()
 
 
 def icon_path(name: str) -> str:
@@ -51,14 +139,17 @@ class StatusBadge(QFrame):
 
 
 class SystemStatusBar(QFrame):
-    """Persistent capture workstation health summary."""
+    """Lightweight summary directly below the primary navigation."""
+
+    gpu_percent_changed = Signal(object)
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
         self.setObjectName("globalStatusBar")
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(8, 6, 8, 6)
-        layout.setSpacing(6)
+        self.setFixedHeight(46)
+        layout.setContentsMargins(10, 5, 10, 5)
+        layout.setSpacing(4)
 
         self.cameras = StatusBadge("camera", "0 路摄像头")
         self.capture = StatusBadge("activity", "传输待机")
@@ -74,9 +165,9 @@ class SystemStatusBar(QFrame):
 
         self._gpu_timer = QTimer(self)
         self._gpu_timer.setInterval(1500)
-        self._gpu_timer.timeout.connect(self._refresh_gpu)
+        self._gpu_timer.timeout.connect(self.refresh_gpu)
         self._gpu_timer.start()
-        self._refresh_gpu()
+        self.refresh_gpu()
 
     def set_compact(self, compact: bool) -> None:
         self.gpu.setVisible(not compact)
@@ -105,12 +196,91 @@ class SystemStatusBar(QFrame):
         state = "bad" if gib < 5 else ("warn" if gib < 20 else "good")
         self.storage.set_status(f"可用 {gib:.0f} GB", state)
 
-    def _refresh_gpu(self) -> None:
-        try:
-            raw = Path("/sys/devices/gpu.0/load").read_text(encoding="ascii").strip()
-            percent = max(0.0, min(100.0, int(raw) / 10.0))
-        except (OSError, ValueError):
+    def refresh_gpu(self) -> None:
+        percent = _read_gpu_percent()
+        self.gpu_percent_changed.emit(percent)
+        if percent is None:
             self.gpu.set_status("GPU --", "muted")
             return
         state = "warn" if percent >= 85 else "good"
         self.gpu.set_status(f"GPU {percent:.0f}%", state)
+
+
+class ResourceStatusWidget(QFrame):
+    """GPU and storage telemetry aligned to the right edge of navigation."""
+
+    def __init__(self, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.setObjectName("navigationResources")
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+        self.gpu = StatusBadge("gpu", "GPU --")
+        self.storage = StatusBadge("storage", "可用 --")
+        layout.addWidget(self.gpu)
+        layout.addWidget(self.storage)
+
+    def set_storage_available(self, available_bytes: int) -> None:
+        gib = available_bytes / (1024 ** 3)
+        state = "bad" if gib < 5 else ("warn" if gib < 20 else "good")
+        self.storage.set_status(f"可用 {gib:.0f} GB", state)
+
+    def set_gpu_percent(self, percent: float | None) -> None:
+        if percent is None:
+            self.gpu.set_status("GPU --", "muted")
+            return
+        self.gpu.set_status(f"GPU {percent:.0f}%", "warn" if percent >= 85 else "good")
+
+
+class BottomStatusBar(QFrame):
+    """Persistent operational telemetry at the bottom of the workstation."""
+
+    def __init__(self, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.setObjectName("bottomStatusBar")
+        self.setFixedHeight(56)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(14, 7, 14, 7)
+        layout.setSpacing(0)
+
+        self.runtime = StatusBadge("activity", "系统就绪")
+        self.network = StatusBadge("activity", "网络延迟 --")
+        self.sync = StatusBadge("activity", "系统同步 --")
+        self.inference = StatusBadge("ai", "AI 推理 --")
+        self.framerate = StatusBadge("activity", "平均帧率 --")
+        self.logs = StatusBadge("settings", "日志")
+        self._cells = []
+        for badge in (self.runtime, self.network, self.sync, self.inference, self.framerate, self.logs):
+            cell = QFrame()
+            cell.setObjectName("bottomStatusCell")
+            cell_layout = QHBoxLayout(cell)
+            cell_layout.setContentsMargins(4, 0, 4, 0)
+            cell_layout.setSpacing(0)
+            cell_layout.addStretch()
+            cell_layout.addWidget(badge)
+            cell_layout.addStretch()
+            self._cells.append(cell)
+            layout.addWidget(cell, stretch=1)
+
+    def set_compact(self, compact: bool) -> None:
+        self._cells[1].setVisible(not compact)
+
+    def set_runtime(self, text: str, state: str = "good") -> None:
+        self.runtime.set_status(text, state)
+
+    def set_sync(self, spread_ms: float, good: bool) -> None:
+        self.sync.set_status(f"系统同步 {spread_ms:.1f} ms", "good" if good else "warn")
+
+    def set_inference(self, text: str, active: bool) -> None:
+        self.inference.set_status(f"AI 推理 {text}", "good" if active else "muted")
+
+    def set_framerate(self, fps: float) -> None:
+        self.framerate.set_status(f"平均帧率 {fps:.1f} fps", "good" if fps > 0 else "muted")
+
+
+def _read_gpu_percent() -> float | None:
+    try:
+        raw = Path("/sys/devices/gpu.0/load").read_text(encoding="ascii").strip()
+        return max(0.0, min(100.0, int(raw) / 10.0))
+    except (OSError, ValueError):
+        return None

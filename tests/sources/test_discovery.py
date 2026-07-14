@@ -1,6 +1,12 @@
 from pathlib import Path
 
-from multiwebcam.sources.discovery import FrameSourceOptions, VideoMode, discover_frame_sources
+from multiwebcam.sources.discovery import FrameSourceOptions, VideoMode, discover_frame_sources, usb_root_bus
+
+
+def test_usb_root_bus_strips_nested_port_segments():
+    assert usb_root_bus("usb-3610000.xhci-2.1.1.4") == "usb-3610000.xhci-2"
+    assert usb_root_bus("usb-0000:00:14.0-3.1") == "usb-0000:00:14.0-3"
+    assert usb_root_bus("platform-camera") == "platform-camera"
 
 
 def test_discovery_deduplicates_multiple_video_nodes_for_same_bus(monkeypatch):

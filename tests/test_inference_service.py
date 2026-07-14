@@ -6,7 +6,7 @@ from pathlib import Path
 
 
 def _load_inference_service_module():
-    script_path = Path(__file__).resolve().parents[1] / "scripts" / "inference_service.py"
+    script_path = Path(__file__).resolve().parents[1] / "scripts" / "services" / "inference_service.py"
     spec = importlib.util.spec_from_file_location("test_inference_service_module", script_path)
     assert spec is not None
     assert spec.loader is not None

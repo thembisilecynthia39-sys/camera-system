@@ -1,11 +1,12 @@
-from __future__ import annotations
 """Frame conversion utilities for Qt display."""
+
+from __future__ import annotations
 
 import cv2
 import numpy as np
 from PySide6.QtGui import QImage, QPixmap
 
-from multiwebcam.quality.metrics import ObjectRegion
+from multiwebcam.quality.metrics import MAX_PRIMARY_OBJECT_AREA_RATIO, ObjectRegion
 
 
 def frame_to_pixmap(
@@ -21,7 +22,7 @@ def frame_to_pixmap(
         object_region: Optional estimated subject region to draw on preview
     """
     frame = frame.copy()
-    if object_region is not None:
+    if object_region is not None and object_region.area_ratio <= MAX_PRIMARY_OBJECT_AREA_RATIO:
         _draw_object_region(frame, object_region)
     else:
         _draw_center_guide(frame)
@@ -46,8 +47,8 @@ def _draw_object_region(frame: np.ndarray, object_region: ObjectRegion) -> None:
 
 def _draw_center_guide(frame: np.ndarray) -> None:
     height, width = frame.shape[:2]
-    box_w = int(width * 0.35)
-    box_h = int(height * 0.45)
+    box_w = int(width * 0.28)
+    box_h = int(height * 0.36)
     x = (width - box_w) // 2
     y = (height - box_h) // 2
     cv2.rectangle(frame, (x, y), (x + box_w, y + box_h), (0, 200, 255), 1)

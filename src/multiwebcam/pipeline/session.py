@@ -1,5 +1,6 @@
-from __future__ import annotations
 """Multi-camera capture session orchestration."""
+
+from __future__ import annotations
 
 
 import logging
@@ -106,6 +107,7 @@ class CaptureSession:
         self._is_recording = Event()  # Shared flag for producers
         self._frame_recorder: FrameRecorder | None = None  # Created on start_recording()
         self._recording_device_paths: list[str] = []
+        self._startup_errors: dict[str, str] = {}
 
     @staticmethod
     def _source_fps(source: FrameSource) -> int:
@@ -126,9 +128,20 @@ class CaptureSession:
             return
 
         logger.info(f"Starting capture session with {len(self.sources)} cameras")
+        self._startup_errors = {}
 
-        # Start all cameras in parallel and validate PTS compatibility
-        # Cameras stay open - producers take over the already-running sources
+        # Keep the application usable while the user reconnects or retries a
+        # camera that failed during a previous startup attempt.
+        if not self.sources:
+            self._running = True
+            logger.warning("Capture session started with no active cameras")
+            return
+
+        # Start cameras in a deterministic sequence and validate PTS
+        # compatibility.  V4L2/UVC reserves USB periodic bandwidth during
+        # STREAMON; opening every endpoint at once makes the result dependent
+        # on thread scheduling and can make a healthy camera lose the race.
+        # Cameras stay open - producers take over the already-running sources.
         self._start_all_sources_parallel()
 
         # Initialize monitoring state
@@ -231,6 +244,11 @@ class CaptureSession:
         with self._state_lock:
             producers = list(self._producers.values())
         return bool(producers) and all(producer.is_running for producer in producers)
+
+    @property
+    def startup_errors(self) -> dict[str, str]:
+        """Errors from the most recent source-start attempt, keyed by device path."""
+        return dict(self._startup_errors)
 
     @property
     def all_producers_paused(self) -> bool:
@@ -609,45 +627,55 @@ class CaptureSession:
 
     def _start_all_sources_parallel(self) -> None:
         """
-        Start all cameras in parallel and validate PTS compatibility.
+        Start all cameras in a deterministic sequence and validate PTS.
 
-        Opens all cameras simultaneously using threads, then checks that
-        their PTS timestamps are from the same epoch. Cameras stay open
-        after validation - they're handed to producers.
+        The method name is retained for compatibility with existing callers,
+        but startup is intentionally serial.  A camera's V4L2 ``STREAMON``
+        reserves USB bandwidth, so parallel opens can cause a healthy endpoint
+        to fail merely because it was scheduled last. Cameras stay open after
+        validation and are handed to producers.
 
-        Raises:
-            CaptureSessionError: If cameras have incompatible timestamp epochs.
+        Failed individual sources are recorded in ``startup_errors`` while
+        healthy sources continue. A timestamp epoch mismatch still raises
+        ``CaptureSessionError`` because it makes synchronization unsafe.
         """
-        from concurrent.futures import ThreadPoolExecutor, as_completed
-
-        def start_source(source: FrameSource) -> tuple[str, float | None, Exception | None]:
-            """Start a single source and return its PTS info."""
-            try:
-                status = source.start()
-                return (source.device_path, status.first_pts_seconds, None)
-            except Exception as e:
-                return (source.device_path, None, e)
-
-        # Start all cameras in parallel
         pts_values: list[tuple[str, float | None]] = []
         errors: list[tuple[str, Exception]] = []
 
-        with ThreadPoolExecutor(max_workers=len(self.sources)) as executor:
-            futures = {executor.submit(start_source, s): s for s in self.sources}
-            for future in as_completed(futures):
-                device_path, pts, error = future.result()
-                if error is not None:
-                    errors.append((device_path, error))
-                else:
-                    pts_values.append((device_path, pts))
+        # Preserve the configured source order.  This keeps the configured
+        # low-resolution USB2 source as the last reservation, so a genuine
+        # hardware-capacity failure is reported against the intended fallback
+        # camera instead of moving randomly between tiles.
+        for source in list(self.sources):
+            try:
+                status = source.start()
+                pts_values.append((source.device_path, status.first_pts_seconds))
+            except Exception as error:
+                errors.append((source.device_path, error))
 
-        # If any camera failed to start, stop the ones that did and raise
+        # Keep healthy sources running and retain the failed paths as
+        # diagnostics for the coordinator/UI. A failed camera can be retried
+        # later through CaptureSession.add_source().
         if errors:
-            for source in self.sources:
-                if source.is_running:
-                    source.stop()
-            error_msgs = [f"{device_path}: {e}" for device_path, e in errors]
-            raise CaptureSessionError("Failed to start cameras:\n" + "\n".join(error_msgs))
+            successful_paths = {device_path for device_path, _pts in pts_values}
+            self._startup_errors = {
+                device_path: str(error).strip() or type(error).__name__
+                for device_path, error in errors
+            }
+            self.sources = [source for source in self.sources if source.device_path in successful_paths]
+            for device_path, error in errors:
+                detail = self._startup_errors[device_path]
+                logger.error(
+                    "Camera %s failed to start (%s): %s",
+                    device_path,
+                    type(error).__name__,
+                    detail,
+                )
+            logger.warning(
+                "Continuing with %d/%d camera(s); failed camera(s) can be retried from the UI",
+                len(successful_paths),
+                len(successful_paths) + len(errors),
+            )
 
         # Validate PTS compatibility
         pts_cameras = [(device_path, pts) for device_path, pts in pts_values if pts is not None]

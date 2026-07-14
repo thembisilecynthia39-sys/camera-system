@@ -17,6 +17,7 @@ from typing import Any
 
 from PySide6.QtWidgets import QCheckBox, QComboBox, QLineEdit, QPushButton, QWidget
 
+from multiwebcam.ui.components import GuardedComboBox
 from multiwebcam.ui.theme import Palette
 
 _qfluentwidgets: Any | None = None
@@ -65,7 +66,7 @@ def line_edit(text: str = "", parent: QWidget | None = None) -> QLineEdit:
 
 def combo_box(parent: QWidget | None = None) -> QComboBox:
     """Create a native combo box for consistent cross-version behaviour."""
-    return QComboBox(parent)
+    return GuardedComboBox(parent)
 
 
 def check_box(text: str = "", parent: QWidget | None = None) -> QCheckBox:

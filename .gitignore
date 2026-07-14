@@ -17,14 +17,14 @@ tests/tmp/
 tmp/
 
 # Widget visualization output (screenshots)
-scripts/widget_visualization/output/
+scripts/visualization/widgets/output/
 
 # Test project directories (created by scripts)
-scripts/test_project/
-scripts/widget_visualization/output/test_project/
+scripts/testing/test_project/
+scripts/visualization/widgets/output/test_project/
 
 # PyAV exploration temp files
-scripts/pyav_exploration/tmp/
+scripts/experiments/pyav/tmp/
 
 # local runtime
 captures/
@@ -44,7 +44,9 @@ t-inspect-*
 models/*.engine
 *.ply
 
-# Local Codex/agent skill repositories
-scripts/agent-skills/
-scripts/code-review-skill/
-scripts/ui-ux-pro-max-skill/
+# Generated and local-only artifacts
+artifacts/reconstructions/
+archive/backups/
+
+# Local third-party tool repositories
+vendor/

@@ -146,7 +146,7 @@ def _sanitize_recording_name(raw: str) -> str:
 
 ## Verification
 
-1. Run widget visualization: `xvfb-run --auto-servernum python scripts/widget_visualization/wv_grid_recording_controls.py`
+1. Run widget visualization: `xvfb-run --auto-servernum python scripts/visualization/widgets/wv_grid_recording_controls.py`
 2. Manual test with cameras:
    - Record with default name -> files appear in `recordings/recording_001/`
    - Record with custom name -> files appear in `recordings/<custom>/`

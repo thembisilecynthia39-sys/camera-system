@@ -1,5 +1,6 @@
-from __future__ import annotations
 """V4L2 device capture using OpenCV."""
+
+from __future__ import annotations
 
 
 import logging
@@ -107,7 +108,10 @@ class FrameSource:
             logger.info("Opening %s with GStreamer pipeline: %s", self.device_path, pipeline)
             self._cap = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
         else:
-            self._cap = cv2.VideoCapture(self.device_id, cv2.CAP_V4L2)
+            # Use the discovered device path instead of a transient numeric
+            # index.  Hotplugging can renumber /dev/videoN while bus_info
+            # remains the stable camera identity used by the project.
+            self._cap = cv2.VideoCapture(self.device_path, cv2.CAP_V4L2)
         if not self._cap.isOpened():
             raise FrameSourceError(f"Cannot open {self.device_path}")
 
@@ -142,7 +146,9 @@ class FrameSource:
             if perf_counter() >= deadline:
                 raise FrameSourceError(
                     f"{self.device_path} opened but delivered no frames within "
-                    f"{self._config.startup_timeout_seconds:.1f}s"
+                    f"{self._config.startup_timeout_seconds:.1f}s; V4L2 STREAMON may have been "
+                    "rejected because of USB bandwidth exhaustion, an unsupported mode, "
+                    "or another process using the device"
                 )
             sleep(0.01)
 

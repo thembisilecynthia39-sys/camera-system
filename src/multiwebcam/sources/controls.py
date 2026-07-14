@@ -2,7 +2,7 @@ from __future__ import annotations
 """V4L2 camera control discovery and manipulation.
 
 Uses v4l2-ctl for reliable control enumeration and modification.
-Ported from scripts/pyav_exploration/08_camera_controls.py.
+Ported from scripts/experiments/pyav/08_camera_controls.py.
 """
 
 

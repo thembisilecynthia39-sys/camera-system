@@ -1,4 +1,3 @@
-from __future__ import annotations
 """
 Video capture sources for OpenCV V4L2 and Jetson GStreamer backends.
 
@@ -23,6 +22,8 @@ Example:
                 break
 """
 
+from __future__ import annotations
+
 from multiwebcam.sources.config import FrameSourceConfig, FrameSourceStatus
 from multiwebcam.sources.controls import V4L2Control, get_control_value, parse_controls, query_controls, set_control
 from multiwebcam.sources.conversion import frame_to_bgr
@@ -32,6 +33,7 @@ from multiwebcam.sources.discovery import (
     VideoMode,
     discover_frame_sources,
     get_frame_source_options,
+    usb_root_bus,
 )
 from multiwebcam.sources.frame_packet import FramePacket
 
@@ -48,6 +50,7 @@ __all__ = [
     "frame_to_bgr",
     "get_control_value",
     "get_frame_source_options",
+    "usb_root_bus",
     "parse_controls",
     "query_controls",
     "set_control",

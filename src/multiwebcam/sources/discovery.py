@@ -23,6 +23,18 @@ _V4L2_TO_FFMPEG: dict[str, str] = {
 _FFMPEG_TO_V4L2: dict[str, str] = {v: k for k, v in _V4L2_TO_FFMPEG.items()}
 
 
+def usb_root_bus(bus_info: str) -> str:
+    """Return the USB root-controller path used for bandwidth planning.
+
+    V4L2 exposes the physical USB route in ``bus_info``.  Port segments are
+    appended after the root port (for example, ``usb-...xhci-2.1.1.4``), so
+    removing those segments gives the controller shared by the cameras.  The
+    fallback keeps non-USB and synthetic test identifiers stable.
+    """
+    match = re.match(r"^(.*-\d+)(?:\.\d+)*$", bus_info)
+    return match.group(1) if match else bus_info
+
+
 def _normalize_format(fmt: str) -> str:
     """Normalize pixel format to lowercase FFmpeg name."""
     upper = fmt.upper()
@@ -72,6 +84,11 @@ class FrameSourceOptions:
             and abs(mode.fps - config.fps) < 1.0
             for mode in self.modes
         )
+
+    @property
+    def root_bus(self) -> str:
+        """USB root controller shared by this camera."""
+        return usb_root_bus(self.bus_info)
 
     def suggested_config(self) -> FrameSourceConfig:
         """Pick a sensible config for immediate use.

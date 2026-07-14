@@ -109,3 +109,29 @@ def test_tensorrt_detector_prefers_center_object_over_edge_high_confidence(monke
     assert result.object_region.x == 292
     assert result.object_region.y == 212
     assert result.object_region.confidence == pytest.approx(0.55)
+
+
+def test_tensorrt_detector_ignores_oversized_primary_box(monkeypatch):
+    monkeypatch.setitem(
+        sys.modules,
+        "ultralytics",
+        types.SimpleNamespace(YOLO=_FakeYOLO),
+    )
+    _FakeYOLO.prediction = _Prediction(
+        _Boxes(
+            xyxy=[[0, 0, 600, 450]],
+            conf=[0.95],
+        )
+    )
+    settings = InferenceSettings(
+        backend="ultralytics_tensorrt",
+        engine_path="/models/yolo.engine",
+        device="cuda:0",
+        input_size=(640, 640),
+        confidence_threshold=0.25,
+    )
+    detector = UltralyticsTensorRTDetector(settings)
+
+    result = detector.detect(np.zeros((480, 640, 3), dtype=np.uint8), frame_index=9)
+
+    assert result.object_region is None

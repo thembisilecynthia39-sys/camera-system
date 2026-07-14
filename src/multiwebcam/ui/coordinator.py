@@ -19,7 +19,13 @@ from multiwebcam.profiles import AppSettings, ControlValue, ProfileRepository, S
 from multiwebcam.quality.guidance import CaptureGuidanceTracker
 from multiwebcam.quality.metrics import evaluate_capture_set
 from multiwebcam.snapshot import SnapshotCameraInfo, save_snapshot_set
-from multiwebcam.sources import FrameSource, FrameSourceConfig, FrameSourceOptions, discover_frame_sources
+from multiwebcam.sources import (
+    FrameSource,
+    FrameSourceConfig,
+    FrameSourceOptions,
+    discover_frame_sources,
+    usb_root_bus,
+)
 from multiwebcam.sources.controls import set_control
 from multiwebcam.ui.active_pool import SourcePoolEntry, rebalance_active_source_ids
 
@@ -28,7 +34,7 @@ _DEFAULT_MAX_ACTIVE_SOURCES = 4
 _HOTPLUG_DEBOUNCE_MS = 1000
 _HIGH_RESOLUTION = (1280, 720)
 _LOW_RESOLUTION = (640, 480)
-_MAX_ACTIVE_HIGH_RESOLUTION_SOURCES = 2
+_MAX_HIGH_RESOLUTION_SOURCES_PER_USB_ROOT = 2
 
 
 def _sanitize_recording_name(raw: str) -> str:
@@ -124,6 +130,53 @@ class _DiscoveryWorker(QThread):
             self.discovery_completed.emit(None, str(exc))
 
 
+@dataclass(frozen=True)
+class CameraLoadResult:
+    """Result delivered to the UI after background camera work completes."""
+
+    error: str | None
+    started_session: bool
+
+
+class _CameraLoadWorker(QThread):
+    """Open, refresh, and warm up cameras without blocking the Qt thread."""
+
+    load_completed = Signal(object)  # CameraLoadResult
+
+    def __init__(
+        self,
+        coordinator: "CaptureCoordinator",
+        discovered: list[FrameSourceOptions],
+        allow_unconfigured: bool,
+        preserve_existing: bool,
+        start_session: bool,
+    ) -> None:
+        super().__init__()
+        self._coordinator = coordinator
+        self._discovered = discovered
+        self._allow_unconfigured = allow_unconfigured
+        self._preserve_existing = preserve_existing
+        self._start_session = start_session
+
+    def run(self) -> None:
+        error: str | None = None
+        try:
+            if self._start_session:
+                self._coordinator._start_session_blocking()
+            else:
+                self._coordinator._refresh_discovered_sources(
+                    self._discovered,
+                    allow_unconfigured=self._allow_unconfigured,
+                    preserve_existing=self._preserve_existing,
+                    update_view=False,
+                )
+                self._coordinator._recover_capture_session_blocking()
+        except Exception as exc:
+            logger.exception("Camera load worker failed")
+            error = str(exc).strip() or type(exc).__name__
+        self.load_completed.emit(CameraLoadResult(error, self._start_session))
+
+
 class CaptureCoordinator(QObject):
     """Composition root for capture subsystem.
 
@@ -146,6 +199,7 @@ class CaptureCoordinator(QObject):
         self._max_active_sources = _DEFAULT_MAX_ACTIVE_SOURCES
         self._switch_worker: _CameraSwitchWorker | None = None
         self._discovery_worker: _DiscoveryWorker | None = None
+        self._camera_load_worker: _CameraLoadWorker | None = None
         self._runtime_configs: dict[int, FrameSourceConfig] = {}
         self._profile_locked = False
         self._guidance_tracker = CaptureGuidanceTracker()
@@ -159,14 +213,24 @@ class CaptureCoordinator(QObject):
         self._hotplug_watcher.directoryChanged.connect(lambda _path: self._schedule_hotplug_poll())
         self._watch_hotplug_paths()
 
-    def initialize(self) -> None:
-        """Discover sources, match to profiles, create session and presenter."""
+    def initialize(
+        self,
+        allow_unconfigured: bool = False,
+        discovered: list[FrameSourceOptions] | None = None,
+    ) -> None:
+        """Discover sources, match to profiles, create session and presenter.
+
+        Normal startup keeps a configured project closed to unknown devices.
+        A user-requested camera load is allowed to register a newly discovered
+        device after it has been inspected by the V4L2 discovery worker.
+        """
         profiles = self._repo.load_all()
         self._settings = self._repo.load_settings()
         self._profile_locked = bool(profiles)
         profiles_by_bus = {p.bus_info: p for p in profiles}
 
-        discovered = discover_frame_sources()
+        if discovered is None:
+            discovered = discover_frame_sources()
         if self._profile_locked:
             profiles_by_bus = self._rebind_profiles_if_topology_changed(profiles, discovered)
         matched: list[tuple[FrameSourceOptions, SourceProfile]] = []
@@ -176,7 +240,7 @@ class CaptureCoordinator(QObject):
         for options in discovered:
             if options.bus_info in profiles_by_bus:
                 profile = profiles_by_bus[options.bus_info]
-            elif not self._profile_locked:
+            elif not self._profile_locked or allow_unconfigured:
                 profile = SourceProfile.with_defaults(
                     source_id=next_source_id,
                     bus_info=options.bus_info,
@@ -206,6 +270,7 @@ class CaptureCoordinator(QObject):
         )
 
         frame_sources: list[FrameSource] = []
+        high_resolution_by_root: dict[str, int] = {}
 
         for options, profile in matched:
             should_ignore = profile.source_id not in active_ids
@@ -220,6 +285,19 @@ class CaptureCoordinator(QObject):
                 capture_backend=profile.capture_backend,
                 gstreamer_pipeline=profile.gstreamer_pipeline,
             )
+
+            # USB bandwidth is shared by the root controller, not by the
+            # entire machine.  In particular, the fixed USB3 camera must not
+            # consume the two-high-resolution budget intended for the USB2
+            # cameras.  Apply the same policy during initial construction and
+            # during standby activation so both paths behave consistently.
+            root_bus = usb_root_bus(options.bus_info)
+            if not should_ignore and config.resolution == _HIGH_RESOLUTION:
+                high_count = high_resolution_by_root.get(root_bus, 0)
+                if high_count >= _MAX_HIGH_RESOLUTION_SOURCES_PER_USB_ROOT:
+                    config = self._config_with_resolution(config, _LOW_RESOLUTION)
+                else:
+                    high_resolution_by_root[root_bus] = high_count + 1
 
             if not profile.ignore:
                 source = FrameSource(options.path, config)
@@ -294,10 +372,86 @@ class CaptureCoordinator(QObject):
 
     def start(self) -> None:
         """Start the capture session."""
-        if self._session:
-            self._apply_saved_controls()
-            self._session.start()
-            self._pause_ignored_producers()
+        if self._session is None:
+            return
+
+        try:
+            self._start_session_blocking()
+            self._refresh_presenter_lookup()
+        except Exception as exc:
+            # A capture failure must not prevent the Qt event loop from
+            # starting. The grid remains available so the user can inspect
+            # the failed tile and retry after reconnecting the device.
+            logger.exception("Capture session failed to start")
+            self._mark_capture_start_failure(exc)
+
+        self._sync_capture_start_state()
+
+    def start_async(self) -> None:
+        """Start cameras in the background without blocking the Qt thread.
+
+        ``MainWindow`` calls this after the initial grid has been created so
+        V4L2 warm-up cannot delay the first paint.  The synchronous ``start``
+        method remains available for command-line probes and tests that
+        intentionally own their worker context.
+        """
+        if self._session is None or self._camera_load_worker is not None:
+            return
+        if self._grid_view is not None:
+            if hasattr(self._grid_view, "set_camera_load_busy"):
+                self._grid_view.set_camera_load_busy(True)
+            self._grid_view.set_video_paused(True, "正在后台连接摄像头...")
+        self._start_camera_load_worker(
+            [],
+            allow_unconfigured=False,
+            preserve_existing=False,
+            start_session=True,
+        )
+
+    def _start_session_blocking(self) -> None:
+        """Start cameras and apply hardware settings in the caller's worker."""
+        if self._session is None:
+            return
+        self._apply_saved_controls()
+        self._session.start()
+        self._record_session_startup_errors()
+        self._pause_ignored_producers()
+
+    def _recover_capture_session_blocking(self) -> None:
+        """Retry an unhealthy session without interrupting a healthy one."""
+        if self._session is None or self._session.producers_healthy:
+            return
+        self._session.stop()
+        self._start_session_blocking()
+
+    def _mark_capture_start_failure(self, error: Exception) -> None:
+        detail = str(error).strip() or type(error).__name__
+        for info in self._sources.values():
+            if info.device_path:
+                info.error = detail
+
+    def _sync_capture_start_state(self) -> None:
+        if self._grid_view is None or self._session is None:
+            return
+
+        active_count = len(self.get_source_id_lookup())
+        failed_count = sum(1 for info in self._sources.values() if info.device_path and info.error)
+        self._grid_view.set_capture_available(active_count > 0)
+        self._sync_grid_runtime_state()
+
+        if failed_count:
+            if active_count:
+                self._grid_view.set_photo_capture_result(
+                    f"已启动 {active_count} 路摄像头，{failed_count} 路启动失败；可点击“加载摄像头”重试",
+                    ok=False,
+                )
+            else:
+                self._grid_view.set_photo_capture_result(
+                    "摄像头暂未启动，请检查连接后点击“加载摄像头”重试",
+                    ok=False,
+                )
+        elif active_count:
+            self._grid_view.set_photo_capture_result("视频传输已启动", ok=True)
 
     def stop(self) -> None:
         """Stop presenter and session."""
@@ -309,6 +463,9 @@ class CaptureCoordinator(QObject):
         if self._switch_worker is not None:
             self._switch_worker.wait()
             self._switch_worker = None
+        if self._camera_load_worker is not None:
+            self._camera_load_worker.wait()
+            self._camera_load_worker = None
         if self._presenter:
             self._presenter.shutdown()
         if self._session:
@@ -391,6 +548,8 @@ class CaptureCoordinator(QObject):
 
         view = GridView(parent)
         self._grid_view = view
+        view.set_app_settings(self._settings)
+        view.settings_save_requested.connect(lambda settings: self._save_app_settings(view, settings))
         view.set_storage_available(shutil.disk_usage(self._project_path).free)
         for source_id, info in self._sources.items():
             view.add_source(source_id, info.profile.label, ignore=info.profile.ignore)
@@ -476,7 +635,21 @@ class CaptureCoordinator(QObject):
         p.enter_grid_mode()
         self._pause_ignored_producers()
         self._refresh_guidance(view)
+        if (
+            self._session.producers_healthy
+            or self._session.startup_errors
+            or any(info.device_path and info.error for info in self._sources.values())
+        ):
+            self._sync_capture_start_state()
         return view
+
+    def _save_app_settings(self, view, settings: AppSettings) -> None:
+        """Persist workstation settings and apply recording settings safely."""
+        self._repo.save_settings(settings)
+        self._settings = settings
+        if self._session is not None:
+            self._session.recording_settings = settings.recording
+        view.show_settings_saved()
 
     def _on_grid_workspace_changed(self, index: int) -> None:
         """Transfer compute resources between live capture and model viewing."""
@@ -497,17 +670,35 @@ class CaptureCoordinator(QObject):
                 self._grid_view.set_video_paused(False, "视频传输已恢复")
 
     def _load_cameras(self, view) -> None:
-        """Resume healthy cameras, scanning USB only when the current session is unhealthy."""
-        if self._session is not None and self._session.producers_healthy:
-            self._presenter.enter_grid_mode()
-            self._pause_ignored_producers()
-            view.set_video_paused(False, "摄像头正常，视频传输已启动")
+        """Scan V4L2 devices before resuming or adding cameras.
+
+        Loading is intentionally a discovery action even when the current
+        session is healthy. This lets a camera that appeared late join the
+        active pool without tearing down the cameras already streaming.
+        """
+        if self._session is not None and self._session.is_recording:
+            view.set_video_paused(False, "录制期间不能扫描摄像头")
             return
+        if (
+            self._discovery_worker is not None
+            or self._camera_load_worker is not None
+            or self._switch_worker is not None
+        ):
+            view.set_video_paused(True, "摄像头扫描或连接仍在进行中...")
+            return
+
         self._manual_camera_load_requested = True
-        view.set_video_paused(True, "正在扫描 USB 摄像头...")
+        if hasattr(view, "set_camera_load_busy"):
+            view.set_camera_load_busy(True)
+        if hasattr(view, "set_ignore_controls_enabled"):
+            view.set_ignore_controls_enabled(False)
+        view.set_video_paused(True, "正在用 v4l2-ctl 扫描 USB 摄像头...")
         self._poll_hotplug()
 
     def _toggle_video_transmission(self, view) -> None:
+        if self._discovery_worker is not None or self._camera_load_worker is not None:
+            view.set_video_paused(True, "摄像头扫描或连接仍在进行中...")
+            return
         if self._session is None or self._presenter is None:
             self._load_cameras(view)
             return
@@ -532,7 +723,11 @@ class CaptureCoordinator(QObject):
         from PySide6.QtWidgets import QFileDialog
 
         initial_dir = self._project_path
-        project_models = sorted(self._project_path.glob("*.ply"), key=lambda path: path.stat().st_mtime)
+        model_dirs = (self._project_path / "artifacts" / "reconstructions", self._project_path)
+        project_models = sorted(
+            (path for directory in model_dirs for path in directory.glob("*.ply")),
+            key=lambda path: path.stat().st_mtime,
+        )
         if project_models:
             initial_dir = project_models[-1].parent
 
@@ -820,7 +1015,11 @@ class CaptureCoordinator(QObject):
             self._presenter.set_source_id_lookup(self.get_source_id_lookup())
 
     def _poll_hotplug(self) -> None:
-        if self._discovery_worker is not None or self._switch_worker is not None:
+        if (
+            self._discovery_worker is not None
+            or self._camera_load_worker is not None
+            or self._switch_worker is not None
+        ):
             return
         if self._session is not None and self._session.is_recording:
             return
@@ -838,53 +1037,163 @@ class CaptureCoordinator(QObject):
             self._discovery_worker.wait()
             self._discovery_worker = None
 
+        manual_load = self._manual_camera_load_requested
         if error_or_none:
-            self._manual_camera_load_requested = False
             logger.warning("Skipping hotplug refresh: %s", error_or_none)
+            if manual_load:
+                self._start_camera_load_worker(
+                    [],
+                    allow_unconfigured=True,
+                    preserve_existing=True,
+                    start_session=False,
+                )
             return
 
         discovered = options_or_none
         if not isinstance(discovered, list):
-            self._manual_camera_load_requested = False
+            if manual_load:
+                self._start_camera_load_worker(
+                    [],
+                    allow_unconfigured=True,
+                    preserve_existing=True,
+                    start_session=False,
+                )
             return
         if self._session is None:
-            self._initialize_from_hotplug(discovered)
-            if self._manual_camera_load_requested:
-                self._manual_camera_load_requested = False
-                if self._grid_view is not None:
-                    if self._session is None:
-                        self._grid_view.set_video_paused(True, "未发现可用 USB 摄像头")
-                    else:
-                        self._grid_view.set_video_paused(False, "USB 扫描完成，视频传输已启动")
+            try:
+                # Profile matching and presenter creation are lightweight UI
+                # setup. The actual V4L2 open/warm-up happens in the worker.
+                self.initialize(allow_unconfigured=manual_load, discovered=discovered)
+            except Exception as exc:
+                logger.exception("Failed to initialize cameras after discovery")
+                self._on_camera_load_completed(
+                    CameraLoadResult(str(exc).strip() or type(exc).__name__, True)
+                )
+                return
+            self._start_camera_load_worker(
+                [],
+                allow_unconfigured=manual_load,
+                preserve_existing=manual_load,
+                start_session=True,
+            )
             return
-        self._refresh_discovered_sources(discovered)
-        if self._manual_camera_load_requested:
-            self._manual_camera_load_requested = False
-            if self._session is not None and self._presenter is not None:
-                if not self._session.producers_healthy:
-                    self._session.stop()
-                    self._session.start()
-                    self._refresh_presenter_lookup()
+
+        self._start_camera_load_worker(
+            discovered,
+            allow_unconfigured=manual_load,
+            preserve_existing=manual_load,
+            start_session=False,
+        )
+
+    def _start_camera_load_worker(
+        self,
+        discovered: list[FrameSourceOptions],
+        *,
+        allow_unconfigured: bool,
+        preserve_existing: bool,
+        start_session: bool,
+    ) -> None:
+        if self._camera_load_worker is not None:
+            return
+        self._camera_load_worker = _CameraLoadWorker(
+            self,
+            discovered,
+            allow_unconfigured=allow_unconfigured,
+            preserve_existing=preserve_existing,
+            start_session=start_session,
+        )
+        self._camera_load_worker.load_completed.connect(
+            self._on_camera_load_completed,
+            Qt.ConnectionType.QueuedConnection,
+        )
+        self._camera_load_worker.finished.connect(self._camera_load_worker.deleteLater)
+        self._camera_load_worker.start()
+
+    def _on_camera_load_completed(self, result: object) -> None:
+        if self._camera_load_worker is not None:
+            self._camera_load_worker.wait()
+            self._camera_load_worker = None
+
+        if isinstance(result, CameraLoadResult):
+            load_error = result.error
+            started_session = result.started_session
+        else:
+            load_error = str(result) if result else None
+            started_session = False
+
+        manual_load = self._manual_camera_load_requested
+        self._manual_camera_load_requested = False
+        if self._grid_view is not None and hasattr(self._grid_view, "set_camera_load_busy"):
+            self._grid_view.set_camera_load_busy(False)
+
+        if load_error:
+            logger.warning("Camera load completed with error: %s", load_error)
+            if not manual_load:
+                self._mark_capture_start_failure(RuntimeError(load_error))
+
+        self._sync_grid_source_tiles()
+        self._refresh_presenter_lookup()
+        if self._session is not None and self._presenter is not None:
+            try:
                 self._presenter.enter_grid_mode()
                 self._pause_ignored_producers()
-                if self._grid_view is not None:
-                    self._grid_view.set_video_paused(False, "USB 扫描完成，视频传输已启动")
+            except RuntimeError:
+                logger.warning("Cannot restore grid mode after camera load")
+        self._sync_capture_start_state()
 
-    def _initialize_from_hotplug(self, discovered: list[FrameSourceOptions]) -> None:
-        if not discovered:
+        if started_session and self._session is not None:
+            self.capture_available.emit()
+
+        if not manual_load or self._grid_view is None:
             return
 
-        self.initialize()
+        if self._session is None:
+            self._grid_view.set_video_paused(True, "未发现可用 USB 摄像头，等待下次扫描")
+            return
+
+        if self._session.producers_healthy:
+            if load_error:
+                message = "连接失败，继续使用已有摄像头"
+            elif any(info.device_path and info.error for info in self._sources.values()):
+                message = "新摄像头未能打开，继续使用已有摄像头"
+            else:
+                message = "扫描完成，视频传输已启动"
+            self._grid_view.set_video_paused(False, message)
+        else:
+            self._grid_view.set_video_paused(True, "扫描完成，但没有可用摄像头")
+
+    def _record_session_startup_errors(self) -> None:
         if self._session is None:
             return
+        for device_path, error in self._session.startup_errors.items():
+            for info in self._sources.values():
+                if info.device_path == device_path:
+                    info.error = error
+                    break
 
-        self._apply_saved_controls()
-        self._session.start()
-        self._pause_ignored_producers()
-        self._refresh_presenter_lookup()
-        self.capture_available.emit()
+    def _sync_grid_source_tiles(self) -> None:
+        """Create/update source tiles on the Qt thread after worker changes."""
+        if self._grid_view is None:
+            return
+        for info in self._sources.values():
+            if not self._grid_view.has_source(info.source_id):
+                self._grid_view.add_source(
+                    info.source_id,
+                    info.profile.label,
+                    ignore=info.profile.ignore,
+                )
+            self._grid_view.set_source_ignored(info.source_id, info.profile.ignore)
+            config = self._runtime_configs.get(info.source_id, self._source_config(info))
+            w, h = config.resolution
+            self._grid_view.set_tile_resolution(info.source_id, f"{w}x{h}")
 
-    def _refresh_discovered_sources(self, discovered: list[FrameSourceOptions]) -> None:
+    def _refresh_discovered_sources(
+        self,
+        discovered: list[FrameSourceOptions],
+        allow_unconfigured: bool = False,
+        preserve_existing: bool = False,
+        update_view: bool = True,
+    ) -> None:
         if self._session is None:
             return
 
@@ -895,7 +1204,7 @@ class CaptureCoordinator(QObject):
         for options in discovered:
             if options.bus_info in sources_by_bus:
                 continue
-            if self._profile_locked:
+            if self._profile_locked and not allow_unconfigured:
                 logger.info(
                     "Ignoring hotplugged unconfigured capture device %s (%s)",
                     options.path,
@@ -918,15 +1227,16 @@ class CaptureCoordinator(QObject):
             )
             self._sources[profile.source_id] = info
             sources_by_bus[options.bus_info] = info
-            if self._grid_view is not None and not self._grid_view.has_source(info.source_id):
-                self._grid_view.add_source(info.source_id, info.profile.label, ignore=True)
-                w, h = info.profile.resolution
-                self._grid_view.set_tile_resolution(info.source_id, f"{w}x{h}")
 
         active_paths = set(self._session.active_device_paths)
         for info in self._sources.values():
             options = options_by_bus.get(info.profile.bus_info)
             if options is None:
+                if preserve_existing:
+                    # A manual scan can be transiently incomplete while USB
+                    # nodes settle. Never remove a working source just because
+                    # this one scan did not report it.
+                    continue
                 if info.device_path in active_paths:
                     try:
                         self._session.remove_source(info.device_path)
@@ -970,8 +1280,9 @@ class CaptureCoordinator(QObject):
             if not should_ignore and not is_active:
                 try:
                     self._activate_source_blocking(info.source_id)
-                except Exception:
+                except Exception as exc:
                     logger.exception("Failed to activate source %s during hotplug refresh", info.source_id)
+                    info.error = str(exc).strip() or type(exc).__name__
                     should_ignore = True
 
             if info.device_path and not info.error and info.profile.ignore != should_ignore:
@@ -983,16 +1294,10 @@ class CaptureCoordinator(QObject):
             self._repo.save(updated_profile)
             info.profile = updated_profile
 
-        if self._grid_view is not None:
-            for info in self._sources.values():
-                if self._grid_view.has_source(info.source_id):
-                    self._grid_view.set_source_ignored(info.source_id, info.profile.ignore)
-                    config = self._runtime_configs.get(info.source_id, self._source_config(info))
-                    w, h = config.resolution
-                    self._grid_view.set_tile_resolution(info.source_id, f"{w}x{h}")
+        if update_view:
+            self._sync_grid_source_tiles()
             self._sync_grid_runtime_state()
-
-        self._refresh_presenter_lookup()
+            self._refresh_presenter_lookup()
 
     def _sync_grid_runtime_state(self) -> None:
         if self._grid_view is None or self._session is None:
@@ -1005,7 +1310,14 @@ class CaptureCoordinator(QObject):
             w, h = config.resolution
             self._grid_view.set_tile_resolution(source_id, f"{w}x{h}")
             if not info.device_path or info.error:
-                self._grid_view.set_source_error(source_id, "Disconnected")
+                if not info.device_path:
+                    message = "未连接"
+                else:
+                    detail = (info.error or "启动失败").splitlines()[0].strip()
+                    message = f"启动失败: {detail[:100]}"
+                self._grid_view.set_source_error(source_id, message)
+            else:
+                self._grid_view.clear_source_error(source_id)
             is_active_low_anchor = (
                 info.device_path in active_paths
                 and config.resolution == _LOW_RESOLUTION
@@ -1137,6 +1449,7 @@ class CaptureCoordinator(QObject):
         if config.resolution != _HIGH_RESOLUTION:
             return config
 
+        target_root = usb_root_bus(info.profile.bus_info)
         active_paths = set(self._session.active_device_paths) if self._session else set()
         active_high = sum(
             1
@@ -1144,20 +1457,29 @@ class CaptureCoordinator(QObject):
             if runtime_config.resolution == _HIGH_RESOLUTION
             and self._sources.get(source_id) is not None
             and self._sources[source_id].device_path in active_paths
+            and usb_root_bus(self._sources[source_id].profile.bus_info) == target_root
         )
-        if active_high >= _MAX_ACTIVE_HIGH_RESOLUTION_SOURCES:
-            return FrameSourceConfig(
-                resolution=_LOW_RESOLUTION,
-                fps=config.fps,
-                pixel_format=config.pixel_format,
-                capture_backend=config.capture_backend,
-                gstreamer_pipeline=config.gstreamer_pipeline,
-                warmup_frames=config.warmup_frames,
-                startup_timeout_seconds=config.startup_timeout_seconds,
-                read_timeout_seconds=config.read_timeout_seconds,
-                v4l2_options=config.v4l2_options,
-            )
+        if active_high >= _MAX_HIGH_RESOLUTION_SOURCES_PER_USB_ROOT:
+            return self._config_with_resolution(config, _LOW_RESOLUTION)
         return config
+
+    @staticmethod
+    def _config_with_resolution(
+        config: FrameSourceConfig,
+        resolution: tuple[int, int],
+    ) -> FrameSourceConfig:
+        """Copy a capture config while changing only its resolution."""
+        return FrameSourceConfig(
+            resolution=resolution,
+            fps=config.fps,
+            pixel_format=config.pixel_format,
+            capture_backend=config.capture_backend,
+            gstreamer_pipeline=config.gstreamer_pipeline,
+            warmup_frames=config.warmup_frames,
+            startup_timeout_seconds=config.startup_timeout_seconds,
+            read_timeout_seconds=config.read_timeout_seconds,
+            v4l2_options=config.v4l2_options,
+        )
 
     def _on_apply_config(self, view) -> None:
         """Handle Apply button -- change source configuration."""

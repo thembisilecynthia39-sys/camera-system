@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
-from PySide6.QtCore import QSize, Qt, QTimer, Signal
+from PySide6.QtCore import QSize, Qt, QTime, QTimer, Signal
 from PySide6.QtGui import QIcon, QPixmap, QRegularExpressionValidator, QResizeEvent
 from PySide6.QtWidgets import (
     QButtonGroup,
@@ -24,11 +25,12 @@ from PySide6.QtWidgets import (
 
 from multiwebcam.pipeline.alignment import AlignmentStats
 from multiwebcam.pipeline.report import CameraStats
+from multiwebcam.profiles import AppSettings, InferenceSettings, RecordingSettings
 from multiwebcam.recognition import InferenceStatus
 from multiwebcam.ui.fluent import check_box, combo_box, line_edit, push_button
-from multiwebcam.ui.components import SystemStatusBar, icon_path
+from multiwebcam.ui.components import BottomStatusBar, NumericStepper, ResourceStatusWidget, SystemStatusBar, icon_path
 from multiwebcam.ui.recording_intent import GridRecordingIntent
-from multiwebcam.ui.theme import set_variant, status_style
+from multiwebcam.ui.theme import set_variant
 from multiwebcam.ui.views.source_tile import SourceTile
 
 
@@ -61,12 +63,15 @@ class GridView(QWidget):
     workspace_changed = Signal(int)
     load_cameras_requested = Signal()
     pause_video_requested = Signal()
+    settings_save_requested = Signal(object)
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._tiles: dict[int, SourceTile] = {}
         self._errored_source_ids: set[int] = set()
         self._ignored_source_ids: set[int] = set()
+        self._quality_alerts: list[tuple[str, str]] = []
+        self._app_settings = AppSettings()
         self.setObjectName("gridSurface")
 
         # The shell separates global navigation from contextual controls:
@@ -79,29 +84,34 @@ class GridView(QWidget):
 
         self._top_navigation = QFrame()
         self._top_navigation.setObjectName("topNavigation")
+        self._top_navigation.setFixedHeight(74)
         top_layout = QHBoxLayout(self._top_navigation)
-        top_layout.setContentsMargins(20, 12, 20, 10)
-        top_layout.setSpacing(16)
+        top_layout.setContentsMargins(20, 9, 20, 9)
+        top_layout.setSpacing(18)
 
+        brand_icon_frame = QFrame()
+        brand_icon_frame.setObjectName("brandIcon")
+        brand_icon_frame.setFixedSize(46, 46)
+        brand_icon_layout = QVBoxLayout(brand_icon_frame)
+        brand_icon_layout.setContentsMargins(9, 9, 9, 9)
+        brand_icon = QLabel()
+        brand_icon.setPixmap(QPixmap(icon_path("cube")).scaled(28, 28, Qt.AspectRatioMode.KeepAspectRatio,
+                                                               Qt.TransformationMode.SmoothTransformation))
+        brand_icon_layout.addWidget(brand_icon)
+        top_layout.addWidget(brand_icon_frame)
         brand_layout = QVBoxLayout()
         brand_layout.setContentsMargins(0, 0, 0, 0)
         brand_layout.setSpacing(1)
         self._brand = QLabel("边端 3DGS 重建")
-        self._brand.setObjectName("brandMark")
-        self._page_title = QLabel("采集工作台")
-        self._page_title.setObjectName("pageTitle")
+        self._brand.setObjectName("brandTitle")
+        self._page_title = self._brand
         self._subtitle = QLabel("多机位采集与重建")
         self._subtitle.setObjectName("captionLabel")
         self._subtitle.setWordWrap(True)
         brand_layout.addWidget(self._brand)
-        brand_layout.addWidget(self._page_title)
         brand_layout.addWidget(self._subtitle)
         top_layout.addLayout(brand_layout)
-
-        self._nav_label = QLabel("工作区")
-        self._nav_label.setObjectName("navLabel")
-        top_layout.addWidget(self._nav_label)
-
+        top_layout.addSpacing(32)
         self._nav_group = QButtonGroup(self)
         self._nav_group.setExclusive(True)
         nav_layout = QHBoxLayout()
@@ -137,16 +147,18 @@ class GridView(QWidget):
                 button.setChecked(True)
         top_layout.addLayout(nav_layout)
         top_layout.addStretch()
+        self._navigation_resources = ResourceStatusWidget()
+        top_layout.addWidget(self._navigation_resources)
         root_layout.addWidget(self._top_navigation)
 
         self._side_panel = QFrame()
         self._side_panel.setObjectName("contextPanel")
-        self._side_panel.setMinimumWidth(224)
-        self._side_panel.setMaximumWidth(280)
+        self._side_panel.setMinimumWidth(248)
+        self._side_panel.setMaximumWidth(300)
         self._side_panel.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
         side_layout = QVBoxLayout(self._side_panel)
-        side_layout.setContentsMargins(16, 16, 16, 16)
-        side_layout.setSpacing(8)
+        side_layout.setContentsMargins(0, 0, 0, 0)
+        side_layout.setSpacing(0)
 
         self._panel_stack = QStackedWidget()
         self._panel_stack.setObjectName("sidePanelStack")
@@ -156,7 +168,8 @@ class GridView(QWidget):
         self._panel_scroll.setObjectName("sidePanelScroll")
         self._panel_scroll.setWidgetResizable(True)
         self._panel_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self._panel_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._panel_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self._panel_scroll.setAlignment(Qt.AlignTop | Qt.AlignLeft)
         self._panel_scroll.setWidget(self._panel_stack)
         self._panel_scroll.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
         side_layout.addWidget(self._panel_scroll, stretch=1)
@@ -175,6 +188,22 @@ class GridView(QWidget):
         content_header.addSpacing(10)
         content_header.addWidget(self._wall_hint)
         content_header.addStretch()
+        self._grid_mode_btn = QPushButton()
+        self._grid_mode_btn.setObjectName("toolbarButton")
+        self._grid_mode_btn.setIcon(QIcon(icon_path("grid")))
+        self._grid_mode_btn.setToolTip("网格视图")
+        self._grid_mode_btn.setCheckable(True)
+        self._grid_mode_btn.setChecked(True)
+        self._layout_combo = combo_box()
+        self._layout_combo.addItem("布局：2×2")
+        self._layout_combo.setFixedWidth(144)
+        self._layout_combo.setAccessibleName("视频墙布局")
+        self._fullscreen_btn = QPushButton("全屏")
+        self._fullscreen_btn.setObjectName("toolbarButton")
+        self._fullscreen_btn.clicked.connect(self._toggle_fullscreen)
+        content_header.addWidget(self._grid_mode_btn)
+        content_header.addWidget(self._layout_combo)
+        content_header.addWidget(self._fullscreen_btn)
         content_column.addLayout(content_header)
 
         self._grid_widget = QWidget()
@@ -187,25 +216,77 @@ class GridView(QWidget):
         overview_page = self._create_panel_page()
         overview_layout = overview_page.layout()
 
-        overview_title = QLabel("系统概况")
-        overview_title.setObjectName("sideSectionTitle")
-        overview_hint = QLabel("关键采集状态")
-        overview_hint.setObjectName("captionLabel")
-        overview_hint.setWordWrap(True)
-        overview_layout.addWidget(overview_title)
-        overview_layout.addWidget(overview_hint)
-        overview_layout.addSpacing(4)
+        self._status_label = QLabel("系统就绪")
+        self._device_value = QLabel("0 路摄像头")
+        self._alignment_label = QLabel("--")
+        self._recording_value = QLabel("未录制")
+        system_card, system_body = self._dashboard_card("系统状态", "实时")
+        system_card.setMaximumHeight(210)
+        for icon, name, value in (
+            ("camera", "采集设备", self._device_value),
+            ("activity", "传输状态", self._status_label),
+            ("activity", "系统同步", self._alignment_label),
+            ("record", "录制状态", self._recording_value),
+        ):
+            system_body.addWidget(self._status_row(icon, name, value))
+        overview_layout.addWidget(system_card, stretch=1)
 
-        self._status_label = QLabel("状态: 系统就绪")
         self._inference_label = QLabel("AI: --")
-        self._alignment_label = QLabel("同步: --")
+        self._inference_label.setObjectName("overviewStatus")
+        self._inference_label.setWordWrap(True)
+        self._inference_label.setVisible(False)
+        self._ai_latency_value = QLabel("--")
+        self._ai_target_value = QLabel("--/--")
+        ai_card, ai_body = self._dashboard_card("AI 检测", "YOLO TensorRT · 待机")
+        ai_card.setMaximumHeight(140)
+        self._ai_backend_label = ai_card.findChild(QLabel, "cardKicker")
+        ai_body.addWidget(self._inference_label)
+        ai_body.addStretch(1)
+        ai_metrics = QHBoxLayout()
+        ai_metrics.setSpacing(16)
+        ai_metrics.addWidget(self._metric_block(self._ai_latency_value, "ms", "推理延迟"), stretch=1)
+        ai_metrics.addWidget(self._metric_block(self._ai_target_value, "", "检测目标"), stretch=1)
+        ai_body.addLayout(ai_metrics)
+        ai_body.addStretch(1)
+        overview_layout.addWidget(ai_card, stretch=1)
+
+        self._data_transmit_value = QLabel("等待上位机")
+        self._data_receive_value = QLabel("等待 3DGS 文件")
+        data_card, data_body = self._dashboard_card("数据链路", "实时")
+        data_card.setMaximumHeight(140)
+        data_body.addWidget(self._status_row("activity", "数据传输", self._data_transmit_value))
+        data_body.addWidget(self._status_row("cube", "3DGS 接收", self._data_receive_value))
+        overview_layout.addWidget(data_card, stretch=1)
+
         self._quality_label = QLabel("质量: --")
-        for label in (self._status_label, self._inference_label, self._alignment_label, self._quality_label):
-            label.setObjectName("overviewStatus")
-            label.setProperty("status", "muted")
-            label.setWordWrap(True)
-            overview_layout.addWidget(label)
-        overview_layout.addStretch()
+        self._quality_label.setObjectName("overviewStatus")
+        self._quality_label.setVisible(False)
+        self._quality_counts = {
+            "good": QLabel("0 路 (0%)"),
+            "warn": QLabel("0 路 (0%)"),
+            "bad": QLabel("0 路 (0%)"),
+        }
+        quality_card, quality_body = self._dashboard_card("质量监测", "实时分析")
+        quality_card.setMaximumHeight(160)
+        quality_body.addWidget(self._quality_label)
+        for level, name in (("good", "良好"), ("warn", "警告"), ("bad", "严重")):
+            quality_body.addWidget(self._quality_row(level, name, self._quality_counts[level]))
+        overview_layout.addWidget(quality_card, stretch=1)
+
+        alert_card, alert_body = self._dashboard_card("告警信息", "实时")
+        alert_card.setMaximumHeight(160)
+        alert_body.setAlignment(Qt.AlignmentFlag.AlignTop)
+        self._alert_rows = []
+        for index in range(3):
+            row, dot, message, timestamp = self._alert_row(alert_card)
+            if index == 0:
+                message.setText("暂无告警")
+                dot.setProperty("level", "good")
+                timestamp.setText("--:--:--")
+            self._alert_rows.append((row, dot, message, timestamp))
+            alert_body.addWidget(row)
+            row.setVisible(index == 0)
+        overview_layout.addWidget(alert_card, stretch=1)
         self._panel_stack.addWidget(overview_page)
 
         record_page = self._create_panel_page()
@@ -302,8 +383,8 @@ class GridView(QWidget):
             label.setObjectName("captionLabel")
             label.setWordWrap(True)
             guide_layout.addWidget(label)
-        self._guide_done_label.setStyleSheet(status_style("muted", bold=False))
-        self._guide_warning_label.setStyleSheet(status_style("warning"))
+        self._guide_done_label.setProperty("status", "muted")
+        self._guide_warning_label.setProperty("status", "warn")
         guide_layout.addStretch()
         self._panel_stack.addWidget(guide_page)
 
@@ -312,17 +393,86 @@ class GridView(QWidget):
         settings_title = QLabel("系统设置")
         settings_title.setObjectName("sideSectionTitle")
         settings_layout.addWidget(settings_title)
-        fps_label = QLabel("刷新:")
-        fps_label.setObjectName("captionLabel")
-        settings_layout.addWidget(fps_label)
+
+        settings_hint = QLabel("工作站级参数·按生效范围分组")
+        settings_hint.setObjectName("captionLabel")
+        settings_hint.setWordWrap(True)
+        settings_layout.addWidget(settings_hint)
+
+        preview_group, preview_layout = self._create_settings_group("预览与显示", "即时生效")
+        settings_layout.addWidget(preview_group)
         self._fps_combo = combo_box()
         self._fps_combo.addItems(["15 fps", "30 fps", "60 fps"])
         self._fps_combo.setCurrentText("15 fps")
         self._fps_combo.currentTextChanged.connect(self._on_fps_changed)
-        settings_layout.addWidget(self._fps_combo)
-        self._mirror_cb = check_box("镜像")
+        self._add_setting_row(preview_layout, "画面刷新率", "视频墙的 UI 更新频率", self._fps_combo)
+        self._mirror_cb = check_box("水平镜像预览")
+        self._mirror_cb.setObjectName("settingToggle")
         self._mirror_cb.toggled.connect(self.mirror_toggled.emit)
-        settings_layout.addWidget(self._mirror_cb)
+        self._add_setting_row(preview_layout, "预览镜像", "仅改变显示方向", self._mirror_cb)
+
+        recording_group, recording_layout = self._create_settings_group("录制与编码", "下次录制")
+        settings_layout.addWidget(recording_group)
+        self._recording_backend_combo = combo_box()
+        self._recording_backend_combo.addItem("PyAV（通用）", "pyav")
+        self._recording_backend_combo.addItem("GStreamer（Jetson）", "gstreamer")
+        self._add_setting_row(recording_layout, "录制后端", "选择视频写入管线", self._recording_backend_combo)
+        self._codec_combo = combo_box()
+        self._codec_combo.addItems(["h264", "hevc"])
+        self._add_setting_row(recording_layout, "编码格式", "H.264 兼容性更好", self._codec_combo)
+        self._recording_fps = NumericStepper()
+        self._recording_fps.setRange(1, 120)
+        self._recording_fps.setSuffix(" fps")
+        self._add_setting_row(recording_layout, "录制帧率", "输出视频时基", self._recording_fps)
+        self._bitrate_mbps = NumericStepper(decimals=1)
+        self._bitrate_mbps.setRange(0.5, 100.0)
+        self._bitrate_mbps.setDecimals(1)
+        self._bitrate_mbps.setSuffix(" Mbps")
+        self._add_setting_row(recording_layout, "目标码率", "越高越清晰，文件也越大", self._bitrate_mbps)
+        self._maxperf_cb = check_box("启用 Jetson 编码器高性能模式")
+        self._maxperf_cb.setObjectName("settingToggle")
+        self._add_setting_row(recording_layout, "性能模式", "优先保证多路编码稳定性", self._maxperf_cb)
+        self._insert_sps_pps_cb = check_box("定期写入 SPS / PPS")
+        self._insert_sps_pps_cb.setObjectName("settingToggle")
+        self._add_setting_row(recording_layout, "流恢复", "便于中途接入和损坏恢复", self._insert_sps_pps_cb)
+
+        inference_group, inference_layout = self._create_settings_group("AI 推理", "重启生效")
+        settings_layout.addWidget(inference_group)
+        self._inference_backend_combo = combo_box()
+        self._inference_backend_combo.addItem("内置质量规则", "heuristic")
+        self._inference_backend_combo.addItem("TensorRT（进程内）", "ultralytics_tensorrt")
+        self._inference_backend_combo.addItem("TensorRT 独立服务", "subprocess")
+        self._add_setting_row(inference_layout, "推理后端", "独立服务更利于隔离显存", self._inference_backend_combo)
+        self._inference_interval = NumericStepper()
+        self._inference_interval.setRange(20, 5000)
+        self._inference_interval.setSingleStep(20)
+        self._inference_interval.setSuffix(" ms")
+        self._add_setting_row(inference_layout, "检测间隔", "较大数值可降低 GPU 负载", self._inference_interval)
+        self._confidence = NumericStepper(decimals=1)
+        self._confidence.setRange(1.0, 99.0)
+        self._confidence.setSuffix(" %")
+        self._confidence.setDecimals(0)
+        self._add_setting_row(inference_layout, "置信度阈值", "过滤低置信度检测", self._confidence)
+        self._input_size = NumericStepper()
+        self._input_size.setRange(160, 2048)
+        self._input_size.setSingleStep(32)
+        self._input_size.setSuffix(" px")
+        self._add_setting_row(inference_layout, "模型输入尺寸", "正方形推理分辨率", self._input_size)
+        self._device_edit = line_edit()
+        self._device_edit.setPlaceholderText("cuda:0")
+        self._add_setting_row(inference_layout, "计算设备", "例如 cuda:0 或 0", self._device_edit)
+        self._engine_path_edit = line_edit()
+        self._engine_path_edit.setPlaceholderText("未指定 TensorRT engine")
+        self._add_setting_row(inference_layout, "Engine 路径", "TensorRT .engine 模型文件", self._engine_path_edit)
+
+        self._save_settings_btn = push_button("保存系统设置", primary=True)
+        set_variant(self._save_settings_btn, "primary")
+        self._save_settings_btn.clicked.connect(self._emit_settings_save)
+        settings_layout.addWidget(self._save_settings_btn)
+        self._settings_status = QLabel("")
+        self._settings_status.setObjectName("captionLabel")
+        self._settings_status.setWordWrap(True)
+        settings_layout.addWidget(self._settings_status)
         settings_layout.addStretch()
         self._panel_stack.addWidget(settings_page)
 
@@ -356,32 +506,32 @@ class GridView(QWidget):
         video_page.setLayout(content_column)
         self._content_stack.addWidget(video_page)
         self._model_view = GaussianModelView()
-        self._model_view.model_loaded.connect(lambda name: self._model_status_label.setText(f"已加载: {name}"))
-        self._model_view.load_failed.connect(lambda error: self._model_status_label.setText(f"加载失败: {error}"))
+        self._model_view.model_loaded.connect(self._on_3dgs_model_loaded)
+        self._model_view.load_failed.connect(self._on_3dgs_model_failed)
         self._content_stack.addWidget(self._model_view)
 
         self._system_status = SystemStatusBar()
+        self._system_status.setParent(self)
+        self._system_status.hide()
+        self._system_status.gpu_percent_changed.connect(self._navigation_resources.set_gpu_percent)
+        self._system_status.refresh_gpu()
         self._system_status.set_camera_count(0)
         self._system_status.set_capture_paused(False)
+        self._bottom_status = BottomStatusBar()
         content_region = QVBoxLayout()
         content_region.setContentsMargins(0, 0, 0, 0)
         content_region.setSpacing(0)
         content_region.addWidget(self._content_stack, stretch=1)
 
-        status_region = QHBoxLayout()
-        status_region.setContentsMargins(16, 10, 16, 0)
-        status_region.setSpacing(0)
-        status_region.addWidget(self._system_status)
-
         body_layout = QHBoxLayout()
         body_layout.setSizeConstraint(QLayout.SizeConstraint.SetNoConstraint)
-        body_layout.setContentsMargins(16, 12, 16, 16)
+        body_layout.setContentsMargins(16, 12, 16, 12)
         body_layout.setSpacing(16)
         body_layout.addWidget(self._side_panel)
         body_layout.addLayout(content_region, stretch=1)
 
-        root_layout.addLayout(status_region)
         root_layout.addLayout(body_layout, stretch=1)
+        root_layout.addWidget(self._bottom_status)
 
         # Wire destination controls
         self._extrinsic_cb.toggled.connect(self._on_extrinsic_toggled)
@@ -392,6 +542,7 @@ class GridView(QWidget):
         self._pause_video_btn.clicked.connect(self.pause_video_requested.emit)
 
         self._update_dest_summary()
+        QTimer.singleShot(0, lambda: self._panel_scroll.verticalScrollBar().setValue(0))
 
     def _select_workspace(self, index: int) -> None:
         self._panel_stack.setCurrentIndex(index)
@@ -399,28 +550,63 @@ class GridView(QWidget):
         self._model_view.set_active(index == 4)
         self.workspace_changed.emit(index)
 
+    def _toggle_fullscreen(self) -> None:
+        window = self.window()
+        if window.isFullScreen():
+            window.showNormal()
+            self._fullscreen_btn.setText("全屏")
+        else:
+            window.showFullScreen()
+            self._fullscreen_btn.setText("退出全屏")
+
     def load_model(self, path: str) -> None:
         self._model_status_label.setText("正在加载模型...")
+        self._data_receive_value.setText("正在接收模型...")
         self._model_view.load_model(Path(path))
+
+    def _on_3dgs_model_loaded(self, name: str) -> None:
+        self._model_status_label.setText(f"已加载: {name}")
+        self._data_receive_value.setText(f"已接收: {name}")
+
+    def _on_3dgs_model_failed(self, error: str) -> None:
+        self._model_status_label.setText(f"加载失败: {error}")
+        self._data_receive_value.setText("接收文件异常")
+
+    def set_data_link_status(self, transmit: str | None = None, receive: str | None = None) -> None:
+        """Update upstream transfer and reconstructed-model receive states."""
+        if transmit is not None:
+            self._data_transmit_value.setText(transmit)
+        if receive is not None:
+            self._data_receive_value.setText(receive)
+
+    def shutdown(self) -> None:
+        """Release child workers before the view is removed from the stack."""
+        self._model_view.shutdown()
 
     def set_video_paused(self, paused: bool, message: str = "") -> None:
         self._pause_video_btn.setText("继续视频传输" if paused else "暂停视频传输")
         self._pause_video_btn.setProperty("paused", paused)
         self._system_status.set_capture_paused(paused)
         if message:
-            self._status_label.setText(f"状态: {message}")
+            self._status_label.setText(message)
+            self._bottom_status.set_runtime(message, "warn" if paused else "good")
+
+    def set_camera_load_busy(self, busy: bool) -> None:
+        """Prevent duplicate load requests while V4L2 work runs in a worker."""
+        self._load_cameras_btn.setEnabled(not busy)
+        self._pause_video_btn.setEnabled(not busy)
+        self._load_cameras_btn.setText("连接中..." if busy else "加载摄像头")
 
     def resizeEvent(self, event: QResizeEvent) -> None:
         """Simplify secondary content and reflow previews on narrow windows."""
         super().resizeEvent(event)
         compact = event.size().width() < 900
         narrow = event.size().width() < 720
-        self._side_panel.setFixedWidth(210 if narrow else (232 if compact else 248))
-        self._brand.setVisible(not compact)
+        self._side_panel.setFixedWidth(224 if narrow else (260 if compact else 288))
+        self._brand.setVisible(not narrow)
         self._subtitle.setVisible(not compact)
         self._wall_hint.setVisible(not compact)
-        self._nav_label.setVisible(not compact)
-        self._page_title.setVisible(not narrow)
+        self._navigation_resources.setVisible(not compact)
         self._panel_scroll.setVisible(True)
         self._panel_scroll.setVerticalScrollBarPolicy(
             Qt.ScrollBarPolicy.ScrollBarAsNeeded
@@ -430,10 +616,140 @@ class GridView(QWidget):
         for button in self._nav_buttons:
             button.setText("" if narrow else button.property("fullText"))
         self._system_status.set_compact(compact)
+        self._bottom_status.set_compact(compact)
         self._relayout_tiles()
         # The child video wall receives its final width after this event;
         # reflow once more with the settled geometry.
         QTimer.singleShot(0, self._relayout_tiles)
+
+    def _dashboard_card(self, title: str, kicker: str) -> tuple[QFrame, QVBoxLayout]:
+        card = QFrame()
+        card.setObjectName("dashboardCard")
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(12, 8, 12, 8)
+        layout.setSpacing(4)
+        layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        header = QHBoxLayout()
+        title_label = QLabel(title)
+        title_label.setObjectName("cardTitle")
+        kicker_label = QLabel(kicker)
+        kicker_label.setObjectName("cardKicker")
+        header.addWidget(title_label)
+        header.addStretch()
+        header.addWidget(kicker_label)
+        layout.addLayout(header)
+        return card, layout
+
+    def _status_row(self, icon_name: str, name: str, value: QLabel) -> QFrame:
+        row = QFrame()
+        row.setObjectName("statusRow")
+        row.setMinimumHeight(34)
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(0, 2, 0, 2)
+        layout.setSpacing(8)
+        icon = QLabel()
+        icon.setObjectName("rowIcon")
+        icon.setPixmap(QPixmap(icon_path(icon_name)).scaled(15, 15, Qt.AspectRatioMode.KeepAspectRatio,
+                                                        Qt.TransformationMode.SmoothTransformation))
+        label = QLabel(name)
+        label.setObjectName("rowName")
+        value.setObjectName("rowValue")
+        value.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        layout.addWidget(icon)
+        layout.addWidget(label)
+        layout.addStretch()
+        layout.addWidget(value)
+        return row
+
+    def _metric_block(self, value: QLabel, unit: str, caption: str) -> QWidget:
+        block = QWidget()
+        layout = QVBoxLayout(block)
+        layout.setContentsMargins(4, 0, 4, 0)
+        layout.setSpacing(0)
+        value_row = QHBoxLayout()
+        value.setObjectName("metricValue")
+        value_row.addStretch()
+        value_row.addWidget(value)
+        if unit:
+            unit_label = QLabel(unit)
+            unit_label.setObjectName("metricUnit")
+            value_row.addWidget(unit_label)
+        value_row.addStretch()
+        caption_label = QLabel(caption)
+        caption_label.setObjectName("metricCaption")
+        caption_label.setAlignment(Qt.AlignCenter)
+        layout.addLayout(value_row)
+        layout.addWidget(caption_label)
+        return block
+
+    def _quality_row(self, level: str, name: str, value: QLabel) -> QFrame:
+        row = QFrame()
+        row.setObjectName("statusRow")
+        row.setMinimumHeight(30)
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(2, 1, 2, 1)
+        dot = QLabel("●")
+        dot.setObjectName("qualityDot")
+        dot.setProperty("level", level)
+        label = QLabel(name)
+        label.setObjectName("rowName")
+        value.setObjectName("rowValue")
+        layout.addWidget(dot)
+        layout.addWidget(label)
+        layout.addStretch()
+        layout.addWidget(value)
+        return row
+
+    def _alert_row(self, parent: QWidget) -> tuple[QFrame, QLabel, QLabel, QLabel]:
+        row = QFrame(parent)
+        row.setObjectName("statusRow")
+        row.setFixedHeight(34)
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(2, 2, 2, 2)
+        layout.setSpacing(8)
+        dot = QLabel("●", row)
+        dot.setObjectName("qualityDot")
+        message = QLabel(row)
+        message.setObjectName("alertText")
+        message.setTextFormat(Qt.TextFormat.PlainText)
+        message.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        timestamp = QLabel(row)
+        timestamp.setObjectName("alertTime")
+        layout.addWidget(dot)
+        layout.addWidget(message, stretch=1)
+        layout.addWidget(timestamp)
+        return row, dot, message, timestamp
+
+    def _update_alert_rows(self, alerts: list[tuple[str, str]]) -> None:
+        visible_alerts = alerts[: len(self._alert_rows)]
+        if not visible_alerts:
+            visible_alerts = [("good", "暂无告警")]
+        timestamp_text = QTime.currentTime().toString("HH:mm:ss")
+        for index, (row, dot, message, timestamp) in enumerate(self._alert_rows):
+            visible = index < len(visible_alerts)
+            row.setVisible(visible)
+            if not visible:
+                continue
+            level, text = visible_alerts[index]
+            dot.setProperty("level", level)
+            message.setProperty("level", level)
+            message.setText(text)
+            timestamp.setText("" if text.startswith("检测到") else timestamp_text)
+            for widget in (dot, message):
+                widget.style().unpolish(widget)
+                widget.style().polish(widget)
+
+    def _refresh_alerts(self) -> None:
+        """Merge connectivity and image-quality alerts into one ordered list."""
+        alerts: list[tuple[str, str]] = []
+        disconnected = len(self._errored_source_ids)
+        if disconnected:
+            level = "bad" if disconnected == len(self._tiles) else "warn"
+            alerts.append(
+                (level, f"检测到 {disconnected} 路断连，请检查或重新加载")
+            )
+        alerts.extend(self._quality_alerts)
+        self._update_alert_rows(alerts)
 
     def _create_panel_page(self) -> QWidget:
         page = QWidget()
@@ -442,6 +758,96 @@ class GridView(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(9)
         return page
+
+    def _create_settings_group(self, title: str, scope: str) -> tuple[QFrame, QVBoxLayout]:
+        group = QFrame()
+        group.setObjectName("settingsGroup")
+        layout = QVBoxLayout(group)
+        layout.setContentsMargins(12, 11, 12, 12)
+        layout.setSpacing(9)
+        header = QHBoxLayout()
+        title_label = QLabel(title)
+        title_label.setObjectName("settingsGroupTitle")
+        scope_label = QLabel(scope)
+        scope_label.setObjectName("settingsScope")
+        header.addWidget(title_label)
+        header.addStretch()
+        header.addWidget(scope_label)
+        layout.addLayout(header)
+        return group, layout
+
+    def _add_setting_row(self, layout: QVBoxLayout, title: str, hint: str, control: QWidget) -> None:
+        row = QFrame()
+        row.setObjectName("settingsRow")
+        row_layout = QVBoxLayout(row)
+        row_layout.setContentsMargins(9, 7, 7, 8)
+        row_layout.setSpacing(3)
+        label = QLabel(title)
+        label.setObjectName("settingsLabel")
+        description = QLabel(hint)
+        description.setObjectName("settingsHint")
+        description.setWordWrap(True)
+        row_layout.addWidget(label)
+        row_layout.addWidget(description)
+        row_layout.addWidget(control)
+        layout.addWidget(row)
+
+    def set_app_settings(self, settings: AppSettings) -> None:
+        """Populate persistent project settings without changing runtime preview state."""
+        self._app_settings = settings
+        recording = settings.recording
+        inference = settings.inference
+        self._set_combo_data(self._recording_backend_combo, recording.backend)
+        self._codec_combo.setCurrentText(recording.codec)
+        self._recording_fps.setValue(recording.fps)
+        self._bitrate_mbps.setValue(recording.bitrate / 1_000_000)
+        self._maxperf_cb.setChecked(recording.maxperf_enable)
+        self._insert_sps_pps_cb.setChecked(recording.insert_sps_pps)
+        self._set_combo_data(self._inference_backend_combo, inference.backend)
+        self._inference_interval.setValue(inference.interval_ms)
+        self._confidence.setValue(inference.confidence_threshold * 100)
+        self._input_size.setValue(inference.input_size[0])
+        self._device_edit.setText(str(inference.device))
+        self._engine_path_edit.setText(inference.engine_path or "")
+
+    @staticmethod
+    def _set_combo_data(combo, value: str) -> None:
+        index = combo.findData(value)
+        if index >= 0:
+            combo.setCurrentIndex(index)
+
+    def _emit_settings_save(self) -> None:
+        device_text = self._device_edit.text().strip() or "0"
+        device: int | str = int(device_text) if device_text.isdigit() else device_text
+        size = self._input_size.value()
+        settings = AppSettings(
+            recording=replace(
+                self._app_settings.recording,
+                backend=self._recording_backend_combo.currentData(),
+                codec=self._codec_combo.currentText(),
+                fps=self._recording_fps.value(),
+                bitrate=int(self._bitrate_mbps.value() * 1_000_000),
+                insert_sps_pps=self._insert_sps_pps_cb.isChecked(),
+                maxperf_enable=self._maxperf_cb.isChecked(),
+            ),
+            inference=replace(
+                self._app_settings.inference,
+                backend=self._inference_backend_combo.currentData(),
+                engine_path=self._engine_path_edit.text().strip() or None,
+                device=device,
+                input_size=(size, size),
+                confidence_threshold=self._confidence.value() / 100,
+                interval_ms=self._inference_interval.value(),
+            ),
+        )
+        self._app_settings = settings
+        self.settings_save_requested.emit(settings)
+
+    def show_settings_saved(self) -> None:
+        self._settings_status.setText("已保存·录制参数下次录制生效，AI 参数重启后生效")
+        self._settings_status.setProperty("status", "good")
+        self._settings_status.style().unpolish(self._settings_status)
+        self._settings_status.style().polish(self._settings_status)
 
     def _on_fps_changed(self, text: str) -> None:
         fps = int(text.split()[0])
@@ -473,6 +879,8 @@ class GridView(QWidget):
     def _refresh_camera_status(self) -> None:
         connected = len(self._tiles) - len(self._errored_source_ids)
         self._system_status.set_camera_count(max(0, connected))
+        self._device_value.setText(f"{max(0, connected)} 路摄像头")
+        self._refresh_alerts()
 
     def has_source(self, source_id: int) -> bool:
         """True if a tile exists for source_id."""
@@ -569,6 +977,9 @@ class GridView(QWidget):
         for source_id, stat in stats.items():
             if source_id in self._tiles:
                 self._tiles[source_id].update_stats(stat.measured_fps, stat.jitter_ms)
+        active_stats = [stat.measured_fps for source_id, stat in stats.items() if source_id in self._tiles]
+        if active_stats:
+            self._bottom_status.set_framerate(sum(active_stats) / len(active_stats))
 
     def update_quality(self, qualities: dict[int, object], capture_quality: object) -> None:
         """Update realtime per-camera and global quality labels."""
@@ -585,6 +996,25 @@ class GridView(QWidget):
             "bad": "bad",
         }.get(capture_quality.level.value, "muted")
         _set_pill_status(self._quality_label, color)
+        counts = {"good": 0, "warn": 0, "bad": 0}
+        for quality in qualities.values():
+            level = getattr(getattr(quality, "level", None), "value", "")
+            if level in counts:
+                counts[level] += 1
+        total = max(1, sum(counts.values()))
+        for level, count in counts.items():
+            self._quality_counts[level].setText(f"{count} 路 ({count / total * 100:.0f}%)")
+        alerts = []
+        for source_id, quality in qualities.items():
+            level = getattr(getattr(quality, "level", None), "value", "")
+            if level not in {"warn", "bad"}:
+                continue
+            tile = self._tiles.get(source_id)
+            camera_number = tile.display_index if tile is not None else source_id + 1
+            severity = "质量严重" if level == "bad" else "画质警告"
+            alerts.append((level, f"相机 {camera_number} {severity}"))
+        self._quality_alerts = alerts
+        self._refresh_alerts()
 
     def update_guidance(self, guidance: object | None) -> None:
         """Update the lower-right capture guidance panel."""
@@ -594,7 +1024,7 @@ class GridView(QWidget):
             self._guide_next_label.setText("下一角度: --")
             self._guide_done_label.setText("已完成: --")
             self._guide_warning_label.setText("")
-            self._guide_now_label.setStyleSheet(status_style("muted", bold=False))
+            _set_pill_status(self._guide_now_label, "muted")
             return
 
         done = " ".join(f"{angle}" for angle in guidance.completed_angles) or "--"
@@ -611,17 +1041,17 @@ class GridView(QWidget):
         self._guide_warning_label.setText(_zh_guidance_warning(guidance.warning))
 
         if guidance.ready_to_capture:
-            self._guide_now_label.setStyleSheet(status_style("good"))
+            _set_pill_status(self._guide_now_label, "good")
         elif guidance.readiness_percent >= 60:
-            self._guide_now_label.setStyleSheet(status_style("warn"))
+            _set_pill_status(self._guide_now_label, "warn")
         else:
-            self._guide_now_label.setStyleSheet(status_style("bad"))
+            _set_pill_status(self._guide_now_label, "bad")
 
     def update_alignment(self, alignment: AlignmentStats | None) -> None:
         """Update alignment stats in status bar."""
         if alignment:
             self._alignment_label.setText(
-                f"同步: {alignment.mean_spread_ms:.1f}ms | 完整 {alignment.complete_cluster_pct:.0f}%"
+                f"{alignment.mean_spread_ms:.1f} ms"
             )
             if alignment.complete_cluster_pct >= 95 and alignment.mean_spread_ms <= 20:
                 _set_pill_status(self._alignment_label, "good")
@@ -629,6 +1059,10 @@ class GridView(QWidget):
                 _set_pill_status(self._alignment_label, "warn")
             else:
                 _set_pill_status(self._alignment_label, "bad")
+            self._bottom_status.set_sync(
+                alignment.mean_spread_ms,
+                alignment.complete_cluster_pct >= 95 and alignment.mean_spread_ms <= 20,
+            )
 
     def update_inference_status(self, status: InferenceStatus) -> None:
         """Update realtime AI inference status in the status bar."""
@@ -641,18 +1075,38 @@ class GridView(QWidget):
             self._inference_label.setText(f"AI: {backend} | 未启用")
             _set_pill_status(self._inference_label, "muted")
             self._system_status.set_inference("AI 未启用", active=False)
+            self._ai_latency_value.setText("--")
+            self._ai_target_value.setText("0/0")
+            self._bottom_status.set_inference("--", active=False)
+            self._set_ai_card_state("YOLO TensorRT · 未启用", "muted")
             return
 
         if status.warming:
             self._inference_label.setText(f"AI: {backend} 预热中 | 0/{active}")
             _set_pill_status(self._inference_label, "warn")
             self._system_status.set_inference("AI 预热中", active=True, warning=True)
+            self._ai_latency_value.setText("--")
+            self._ai_target_value.setText(f"0/{active}")
+            self._bottom_status.set_inference("预热中", active=True)
+            self._set_ai_card_state(f"{backend} · 预热中", "warn")
             return
 
         latency_text = "--" if latency is None else f"{float(latency):.0f}ms"
         self._inference_label.setText(f"AI: {backend} | {latency_text} | {detected}/{active}")
         _set_pill_status(self._inference_label, "good" if detected else "muted")
         self._system_status.set_inference(f"AI {latency_text}", active=True)
+        self._ai_latency_value.setText("--" if latency is None else f"{float(latency):.0f}")
+        self._ai_target_value.setText(f"{detected}/{active}")
+        self._bottom_status.set_inference(latency_text, active=True)
+        self._set_ai_card_state(f"{backend} · 运行中", "good")
+
+    def _set_ai_card_state(self, text: str, status: str) -> None:
+        if self._ai_backend_label is None:
+            return
+        self._ai_backend_label.setText(text)
+        self._ai_backend_label.setProperty("status", status)
+        self._ai_backend_label.style().unpolish(self._ai_backend_label)
+        self._ai_backend_label.style().polish(self._ai_backend_label)
 
     def set_recording(self, is_recording: bool) -> None:
         """Update UI for recording state."""
@@ -668,6 +1122,7 @@ class GridView(QWidget):
         self._open_folder_btn.setEnabled(not is_recording)
         self._model_nav_button.setEnabled(not is_recording)
         self._system_status.set_recording(is_recording)
+        self._recording_value.setText("正在录制" if is_recording else "未录制")
         for source_id, tile in self._tiles.items():
             tile.set_focus_enabled(not is_recording, reason="录制中..." if is_recording else "")
             if is_recording and source_id not in self._ignored_source_ids:
@@ -688,10 +1143,15 @@ class GridView(QWidget):
         self._mirror_cb.setEnabled(available)
         self.set_ignore_controls_enabled(available)
         self._system_status.set_capture_paused(not available)
+        self._status_label.setText("传输运行" if available else "传输不可用")
+        self._bottom_status.set_runtime(
+            "系统运行正常" if available else "采集不可用",
+            "good" if available else "bad",
+        )
         for tile in self._tiles.values():
             tile.set_focus_enabled(available, reason="未连接" if not available else "")
         if message:
-            self._status_label.setText(f"状态: {message}")
+            self._status_label.setText(message)
             _set_pill_status(self._status_label, "bad")
 
     def set_stopping(self) -> None:
@@ -736,6 +1196,7 @@ class GridView(QWidget):
         tile = self._tiles.get(source_id)
         if tile is not None:
             tile.set_error(message)
+            tile.set_focus_enabled(False, reason="不可用")
             self._errored_source_ids.add(source_id)
             self._refresh_camera_status()
 
@@ -744,10 +1205,12 @@ class GridView(QWidget):
         if source_id not in self._tiles or source_id not in self._errored_source_ids:
             return
         self._errored_source_ids.discard(source_id)
+        self._tiles[source_id].set_focus_enabled(True)
         self._refresh_camera_status()
 
     def set_storage_available(self, available_bytes: int) -> None:
         self._system_status.set_storage_available(available_bytes)
+        self._navigation_resources.set_storage_available(available_bytes)
 
     def set_source_ignored(self, source_id: int, ignored: bool) -> None:
         """Set ignored state for a tile without emitting ignore_toggled."""
@@ -774,7 +1237,7 @@ class GridView(QWidget):
 
     def set_photo_capture_result(self, message: str, ok: bool = True) -> None:
         """Show one-shot photo capture result in the status bar."""
-        self._status_label.setText(f"状态: {message}")
+        self._status_label.setText(message)
         _set_pill_status(self._status_label, "good" if ok else "bad")
 
     def selected_angle_deg(self) -> int:

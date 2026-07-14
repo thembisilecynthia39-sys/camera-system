@@ -1,5 +1,6 @@
-from __future__ import annotations
 """Recognition backend implementations and factory."""
+
+from __future__ import annotations
 
 
 from dataclasses import dataclass
@@ -8,7 +9,11 @@ from time import perf_counter
 import numpy as np
 
 from multiwebcam.profiles.settings import InferenceSettings
-from multiwebcam.quality.metrics import ObjectRegion, detect_primary_object
+from multiwebcam.quality.metrics import (
+    MAX_PRIMARY_OBJECT_AREA_RATIO,
+    ObjectRegion,
+    detect_primary_object,
+)
 from multiwebcam.recognition.subprocess_detector import SubprocessObjectDetector
 from multiwebcam.recognition.types import DetectionResult, ObjectDetector
 
@@ -86,6 +91,8 @@ class UltralyticsTensorRTDetector:
             box_w = x2 - x1
             box_h = y2 - y1
             area_ratio = float(box_w * box_h) / frame_area
+            if area_ratio > MAX_PRIMARY_OBJECT_AREA_RATIO:
+                continue
             center_x = x1 + box_w / 2.0
             center_y = y1 + box_h / 2.0
             distance = ((center_x - frame_center_x) ** 2 + (center_y - frame_center_y) ** 2) ** 0.5

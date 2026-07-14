@@ -27,14 +27,26 @@ class MainWindow(QMainWindow):
         self.setStyleSheet(app_stylesheet())
 
         self._coordinator = CaptureCoordinator(project_path)
-        self._coordinator.initialize()
+        try:
+            self._coordinator.initialize()
+        except Exception:
+            logger.exception("Camera discovery failed during startup")
         self._coordinator.capture_available.connect(self._show_grid_view)
 
         self._stack = QStackedWidget()
         self.setCentralWidget(self._stack)
 
         self._show_grid_view()
-        self._coordinator.start()
+        try:
+            self._coordinator.start_async()
+        except Exception as exc:
+            # Keep the desktop usable even if worker scheduling itself fails.
+            # Camera recovery belongs in the UI, not in a process-level
+            # traceback.
+            logger.exception("Capture startup scheduling escaped coordinator")
+            view = self._stack.currentWidget()
+            if view is not None and hasattr(view, "set_capture_available"):
+                view.set_capture_available(False, f"摄像头启动失败，可点击“加载摄像头”重试: {exc}")
 
     def _show_grid_view(self) -> None:
         self._cleanup_views()
@@ -67,6 +79,9 @@ class MainWindow(QMainWindow):
         while self._stack.count() > 0:
             widget = self._stack.widget(0)
             self._stack.removeWidget(widget)
+            shutdown = getattr(widget, "shutdown", None)
+            if callable(shutdown):
+                shutdown()
             widget.deleteLater()
 
     def closeEvent(self, event) -> None:

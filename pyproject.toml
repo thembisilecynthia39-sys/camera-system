@@ -56,8 +56,8 @@ exclude = [
     "dist",
     "dev",
     "multiwebcam_legacy",
-    "scripts/pyav_exploration",
-    "scripts/widget_visualization",
+    "scripts/experiments/pyav",
+    "scripts/visualization/widgets",
 ]
 
 [tool.ruff.lint]

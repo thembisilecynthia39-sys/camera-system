@@ -4,17 +4,17 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
-    QFormLayout,
+    QAbstractSpinBox,
+    QFrame,
     QLabel,
     QScrollArea,
-    QSlider,
-    QSpinBox,
     QVBoxLayout,
     QWidget,
     QHBoxLayout,
 )
 
 from multiwebcam.sources.controls import V4L2Control
+from multiwebcam.ui.components import GuardedSlider, GuardedSpinBox
 from multiwebcam.ui.fluent import check_box, combo_box, push_button
 from multiwebcam.ui.theme import set_variant
 
@@ -53,6 +53,7 @@ class ControlPanel(QWidget):
         # Create scrollable area
         scroll_area = QScrollArea()
         scroll_area.setWidgetResizable(True)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         scroll_content = QWidget()
         scroll_layout = QVBoxLayout(scroll_content)
         scroll_layout.setContentsMargins(1, 2, 4, 2)
@@ -75,17 +76,22 @@ class ControlPanel(QWidget):
             empty_label.setEnabled(False)
             scroll_layout.addWidget(empty_label)
         else:
-            # Build form with controls
-            form_layout = QFormLayout()
-            form_layout.setHorizontalSpacing(12)
-            form_layout.setVerticalSpacing(10)
-            scroll_layout.addLayout(form_layout)
-
+            # Stack labels above controls so long names never squeeze the
+            # slider or numeric editor into inconsistent widths.
             for control in self._controls:
                 label_text = self._format_label(control.name)
                 widget = self._create_control_widget(control)
                 if widget:
-                    form_layout.addRow(label_text, widget)
+                    row = QFrame()
+                    row.setObjectName("cameraControlRow")
+                    row_layout = QVBoxLayout(row)
+                    row_layout.setContentsMargins(9, 7, 9, 9)
+                    row_layout.setSpacing(6)
+                    label = QLabel(label_text)
+                    label.setObjectName("cameraControlLabel")
+                    row_layout.addWidget(label)
+                    row_layout.addWidget(widget)
+                    scroll_layout.addWidget(row)
 
             # Add Restore Defaults button
             restore_btn = push_button("恢复默认值")
@@ -125,7 +131,7 @@ class ControlPanel(QWidget):
         layout.setSpacing(8)
 
         # Slider
-        slider = QSlider()
+        slider = GuardedSlider()
         slider.setOrientation(Qt.Orientation.Horizontal)
         slider.setMinimum(control.min or 0)
         slider.setMaximum(control.max or 100)
@@ -135,7 +141,11 @@ class ControlPanel(QWidget):
             slider.setValue(control.current)
 
         # Spinbox
-        spinbox = QSpinBox()
+        spinbox = GuardedSpinBox()
+        spinbox.setObjectName("cameraValueEditor")
+        spinbox.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
+        spinbox.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        spinbox.setFixedWidth(72)
         spinbox.setMinimum(control.min or 0)
         spinbox.setMaximum(control.max or 100)
         if control.step:
@@ -149,10 +159,15 @@ class ControlPanel(QWidget):
             if not self._updating:
                 self._updating = True
                 spinbox.setValue(value)
-                self.control_changed.emit(control.name, value)
+                if not slider.isSliderDown():
+                    self.control_changed.emit(control.name, value)
                 self._updating = False
 
-        def on_spinbox_change(value: int) -> None:
+        def on_slider_released() -> None:
+            self.control_changed.emit(control.name, slider.value())
+
+        def on_spinbox_commit() -> None:
+            value = spinbox.value()
             if not self._updating:
                 self._updating = True
                 slider.setValue(value)
@@ -160,7 +175,8 @@ class ControlPanel(QWidget):
                 self._updating = False
 
         slider.valueChanged.connect(on_slider_change)
-        spinbox.valueChanged.connect(on_spinbox_change)
+        slider.sliderReleased.connect(on_slider_released)
+        spinbox.editingFinished.connect(on_spinbox_commit)
 
         layout.addWidget(slider, stretch=3)
         layout.addWidget(spinbox, stretch=1)
@@ -170,6 +186,7 @@ class ControlPanel(QWidget):
     def _create_bool_control(self, control: V4L2Control) -> QWidget:
         """Create checkbox for boolean control."""
         checkbox = check_box()
+        checkbox.setObjectName("cameraBoolControl")
         checkbox.setChecked(control.current != 0 if control.current is not None else False)
 
         # Connect to control_changed signal
@@ -180,6 +197,7 @@ class ControlPanel(QWidget):
     def _create_menu_control(self, control: V4L2Control) -> QWidget:
         """Create combobox for menu control."""
         combo = combo_box()
+        combo.setObjectName("cameraMenuControl")
 
         if control.menu_items:
             # Populate combo with menu items

@@ -30,6 +30,7 @@ class GaussianModelView(QWidget):
         self._gaussian_item = None
         self._axis_item = None
         self._load_worker = None
+        self._shutting_down = False
         self._active = False
         self._interacting = False
         self._warmup_frames = 0
@@ -52,25 +53,39 @@ class GaussianModelView(QWidget):
         self._orbit_checkbox = check_box("自动 360°")
         self._axis_checkbox = check_box("显示坐标系")
         self._axis_checkbox.setChecked(True)
+        self._sort_checkbox = check_box("高质量排序")
+        self._sort_checkbox.setChecked(True)
         overlay_layout.addWidget(self._orbit_checkbox)
         overlay_layout.addWidget(self._axis_checkbox)
+        overlay_layout.addWidget(self._sort_checkbox)
         self._orbit_checkbox.toggled.connect(self.set_auto_orbit)
         self._axis_checkbox.toggled.connect(self.set_axis_visible)
+        self._sort_checkbox.toggled.connect(self.set_depth_sorting)
         self._overlay.adjustSize()
         self._overlay.raise_()
 
     def load_model(self, path: Path) -> None:
         """Load and decimate a model off the GUI thread."""
+        if self._shutting_down:
+            return
         if self._load_worker is not None and self._load_worker.isRunning():
             return
-        self._ensure_renderer()
-        self._load_worker = _ModelLoadWorker(path, max_gaussians=80_000, parent=self)
-        self._load_worker.loaded.connect(self._apply_loaded_model)
-        self._load_worker.failed.connect(self.load_failed.emit)
-        self._load_worker.finished.connect(self._release_load_worker)
-        self._load_worker.start()
+        try:
+            self._ensure_renderer()
+        except Exception as exc:
+            logger.exception("Failed to initialize the 3DGS renderer")
+            self.load_failed.emit(str(exc))
+            return
+        worker = _ModelLoadWorker(path, max_gaussians=80_000, parent=self)
+        self._load_worker = worker
+        worker.loaded.connect(self._apply_loaded_model)
+        worker.failed.connect(self.load_failed.emit)
+        worker.finished.connect(lambda worker=worker: self._release_load_worker(worker))
+        worker.start()
 
     def _apply_loaded_model(self, gs_data: object, center: object, distance: float, name: str) -> None:
+        if self._shutting_down:
+            return
         self._gaussian_item.set_data(gs_data=gs_data)
         self._gl_widget.set_cam_position(center=center, distance=distance)
         self._axis_item.set_size(max(distance * 0.2, 0.1))
@@ -86,11 +101,10 @@ class GaussianModelView(QWidget):
         logger.info("3DGS model loaded: %s (%s preview gaussians)", name, len(gs_data))
         self.model_loaded.emit(name)
 
-    def _release_load_worker(self) -> None:
-        worker = self._load_worker
-        self._load_worker = None
-        if worker is not None:
-            worker.deleteLater()
+    def _release_load_worker(self, worker: QThread) -> None:
+        if self._load_worker is worker:
+            self._load_worker = None
+        worker.deleteLater()
 
     def set_active(self, active: bool) -> None:
         """Run the renderer only while its workspace is visible."""
@@ -98,7 +112,7 @@ class GaussianModelView(QWidget):
         if active and self._gl_widget is not None:
             self._warmup_frames = max(self._warmup_frames, 8)
             self._render_timer.start()
-        elif self._warmup_frames == 0:
+        else:
             self._render_timer.stop()
 
     def set_auto_orbit(self, enabled: bool) -> None:
@@ -113,6 +127,15 @@ class GaussianModelView(QWidget):
     def set_axis_visible(self, visible: bool) -> None:
         self._ensure_renderer()
         self._axis_item.set_visible(visible)
+        self._warmup_frames = max(self._warmup_frames, 2)
+        if self._active:
+            self._render_timer.start()
+
+    def set_depth_sorting(self, enabled: bool) -> None:
+        """Enable correct back-to-front alpha blending, or a faster preview."""
+        self._ensure_renderer()
+        self._gaussian_item.sort_enabled = enabled
+        self._gaussian_item.prev_Rz = np.array([np.inf, np.inf, np.inf])
         self._warmup_frames = max(self._warmup_frames, 2)
         if self._active:
             self._render_timer.start()
@@ -148,7 +171,13 @@ class GaussianModelView(QWidget):
         q3dviewer_root = _find_q3dviewer_root()
         if q3dviewer_root is None:
             raise FileNotFoundError("未找到 3DGSviewer/q3dviewer")
-        os.environ.setdefault("Q3D_QT_IMPL", "PyQt5")
+        # q3dviewer must use the same Qt objects as the host application.
+        # On Jetson the local PySide6 compatibility shim exports PyQt5 types;
+        # on desktop these objects come from the real PySide6 package.
+        qt_binding = QWidget.__module__.split(".", 1)[0]
+        if qt_binding not in {"PyQt5", "PySide6"}:
+            raise RuntimeError(f"无法识别当前 Qt 绑定: {QWidget.__module__}")
+        os.environ["Q3D_QT_IMPL"] = qt_binding
         sys.path.insert(0, str(q3dviewer_root))
 
         from q3dviewer.custom_items.gaussian_item import GaussianItem
@@ -203,7 +232,10 @@ class GaussianModelView(QWidget):
         self._gl_widget.setCursor(Qt.CursorShape.OpenHandCursor)
         self._gl_widget.set_color(np.array([0.05, 0.07, 0.09, 1.0]))
         self._gl_widget.enable_show_center = False
-        self._gaussian_item = GaussianItem(sort_enabled=False, sort_backend="opengl")
+        self._gaussian_item = GaussianItem(
+            sort_enabled=self._sort_checkbox.isChecked(),
+            sort_backend="opengl",
+        )
         class VisibleAxisItem(AxisItem):
             def paint(self):
                 glDisable(GL_DEPTH_TEST)
@@ -225,6 +257,25 @@ class GaussianModelView(QWidget):
         self._overlay.move(12, 12)
         self._overlay.raise_()
 
+    def shutdown(self) -> None:
+        """Stop timers and finish the loader before this widget is destroyed."""
+        if self._shutting_down:
+            return
+        self._shutting_down = True
+        self._render_timer.stop()
+        worker = self._load_worker
+        if worker is not None:
+            if worker.isRunning():
+                worker.requestInterruption()
+                worker.wait()
+            if self._load_worker is worker:
+                self._load_worker = None
+                worker.deleteLater()
+
+    def closeEvent(self, event) -> None:
+        self.shutdown()
+        super().closeEvent(event)
+
 
 class _ModelLoadWorker(QThread):
     loaded = Signal(object, object, float, str)
@@ -237,14 +288,26 @@ class _ModelLoadWorker(QThread):
 
     def run(self) -> None:
         try:
-            gs_data, center, distance = _load_binary_ply_preview(self._path, self._max_gaussians)
+            gs_data, center, distance = _load_binary_ply_preview(
+                self._path,
+                self._max_gaussians,
+                cancelled=self.isInterruptionRequested,
+            )
+            if self.isInterruptionRequested():
+                return
             self.loaded.emit(gs_data, center, distance, self._path.name)
         except Exception as exc:
+            if self.isInterruptionRequested():
+                return
             logger.exception("Failed to load 3DGS model %s", self._path)
             self.failed.emit(str(exc))
 
 
-def _load_binary_ply_preview(path: Path, max_gaussians: int) -> tuple[np.ndarray, np.ndarray, float]:
+def _load_binary_ply_preview(
+    path: Path,
+    max_gaussians: int,
+    cancelled=None,
+) -> tuple[np.ndarray, np.ndarray, float]:
     """Memory-map a binary GS PLY and materialize only a uniform preview sample."""
     type_map = {
         "char": "i1", "uchar": "u1", "short": "<i2", "ushort": "<u2",
@@ -271,6 +334,8 @@ def _load_binary_ply_preview(path: Path, max_gaussians: int) -> tuple[np.ndarray
                 break
     if not vertex_count:
         raise ValueError("PLY 文件没有 Gaussian 顶点")
+    if cancelled is not None and cancelled():
+        raise InterruptedError("模型加载已取消")
 
     required = {"x", "y", "z", "rot_0", "rot_1", "rot_2", "rot_3",
                 "scale_0", "scale_1", "scale_2", "opacity", "f_dc_0", "f_dc_1", "f_dc_2"}
@@ -283,6 +348,8 @@ def _load_binary_ply_preview(path: Path, max_gaussians: int) -> tuple[np.ndarray
     sample_count = min(vertex_count, max_gaussians)
     indices = np.linspace(0, vertex_count - 1, sample_count, dtype=np.int64)
     sample = mapped[indices]
+    if cancelled is not None and cancelled():
+        raise InterruptedError("模型加载已取消")
 
     points = np.column_stack((sample["x"], sample["y"], sample["z"])).astype(np.float32)
     rotations = np.column_stack(tuple(sample[f"rot_{i}"] for i in range(4))).astype(np.float32)
