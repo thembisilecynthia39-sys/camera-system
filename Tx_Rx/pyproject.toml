@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tx-rx"
+version = "0.1.0"
+description = "Task packaging and communication protocol models for Jetson-to-WSL reconstruction"
+readme = "README.md"
+requires-python = ">=3.8"
+dependencies = [
+    "pydantic>=2.0,<3",
+    "PyYAML>=6.0,<7",
+    "requests>=2.22,<3",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=7"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["tx_rx*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

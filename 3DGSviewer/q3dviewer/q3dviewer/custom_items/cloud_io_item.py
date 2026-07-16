@@ -1,0 +1,128 @@
+"""
+Copyright 2024 Panasonic Advanced Technology Development Co.,Ltd. (Liu Yang)
+Distributed under MIT license. See LICENSE for more information.
+"""
+
+from q3dviewer.custom_items.cloud_item import CloudItem
+from pathlib import Path
+import os
+import numpy as np
+from OpenGL.GL import *
+from q3dviewer.Qt.QtWidgets import QPushButton, QLabel, QLineEdit, QMessageBox
+from q3dviewer.utils.cloud_io import save_pcd, save_ply, save_e57, save_las, load_pcd, load_ply, load_e57, load_las
+
+class CloudIOItem(CloudItem):
+    """
+    A OpenGL point cloud item with input/output capabilities.
+    Attributes:
+        size (float): The size of each point. When `point_type` is 'PIXEL', this is the size in screen pixels.
+            When `point_type` is 'SQUARE' or 'SPHERE', this is the size in centimeters in 3D space.
+        alpha (float): The transparency of the points, in the range [0, 1], where 0 is fully transparent and 1 is fully opaque.
+        color_mode (str): The coloring mode for the points.
+            - 'FLAT': Single flat color for all points (uses the `color` attribute).
+            - 'I': Color by intensity.
+            - 'RGB': Per-point RGB color.
+            - 'GRAY': Per-point grayscale color.
+        color (str or tuple): The flat color to use when `color_mode` is 'FLAT'. Accepts any valid matplotlib color (e.g., 'red', '#FF4500', (1.0, 0.5, 0.0)).
+        point_type (str): The type/rendering style of each point:
+            - 'PIXEL': Draw each point as a square pixel on the screen.
+            - 'SQUARE': Draw each point as a square in 3D space.
+            - 'SPHERE': Draw each point as a sphere in 3D space.
+        depth_test (bool): Whether to enable depth testing. If True, points closer to the camera will appear in front of farther ones.
+    """
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.save_path = str(Path(os.path.expanduser("~"), "data.pcd"))
+
+    def add_setting(self, layout):
+        super().add_setting(layout)
+
+        label4 = QLabel("Save Path:")
+        layout.addWidget(label4)
+        box4 = QLineEdit()
+        box4.setText(self.save_path)
+        box4.textChanged.connect(self.set_path)
+        layout.addWidget(box4)
+        save_button = QPushButton("Save Cloud")
+        save_button.clicked.connect(self.save)
+        layout.addWidget(save_button)
+        self.save_msg = QMessageBox()
+        self.save_msg.setIcon(QMessageBox.Information)
+        self.save_msg.setWindowTitle("save")
+        self.save_msg.setStandardButtons(QMessageBox.Ok)
+
+    def save(self):
+        if self.valid_buff_top == 0:
+            self.save_msg.setText("No cloud data to save.")
+            self.save_msg.exec()
+            return
+        # Read cloud data back from GPU (VBO → CPU), one-time cost at save time
+        widget = self.glwidget()
+        if widget is not None:
+            widget.makeCurrent()
+        glBindBuffer(GL_ARRAY_BUFFER, self.vbo)
+        raw = glGetBufferSubData(GL_ARRAY_BUFFER, 0,
+                                 self.valid_buff_top * self.STRIDE)
+        glBindBuffer(GL_ARRAY_BUFFER, 0)
+        if widget is not None:
+            widget.doneCurrent()
+        cloud = np.frombuffer(raw, dtype=self.DATA_TYPE).copy()
+        func = None
+        if self.save_path.endswith(".pcd"):
+            from q3dviewer.utils.cloud_io import save_pcd
+            func = save_pcd
+        elif self.save_path.endswith(".ply"):
+            from q3dviewer.utils.cloud_io import save_ply
+            func = save_ply
+        elif self.save_path.endswith(".e57"):
+            from q3dviewer.utils.cloud_io import save_e57
+            func = save_e57
+        elif self.save_path.endswith(".las"):
+            from q3dviewer.utils.cloud_io import save_las
+            func = save_las
+        elif self.save_path.endswith(".tif") or self.save_path.endswith(".tiff"):
+            print("Do not support save as tif type!")
+        else:
+            print("Unsupported cloud file type!")
+        try:
+            func(cloud, self.save_path)
+            self.save_msg.setText("Save cloud to  %s" % self.save_path)
+        except Exception as e:
+            print(e)
+            self.save_msg.setText("Cannot save to %s" % self.save_path)
+            self.save_msg.exec()
+        self.save_msg.exec()
+
+    def load(self, file, append=False):
+        # print("Try to load %s ..." % file)
+        if file.endswith(".pcd"):
+            from q3dviewer.utils.cloud_io import load_pcd
+            cloud = load_pcd(file)
+        elif file.endswith(".ply"):
+            from q3dviewer.utils.cloud_io import load_ply
+            cloud = load_ply(file)
+        elif file.endswith(".e57"):
+            from q3dviewer.utils.cloud_io import load_e57
+            cloud = load_e57(file)
+        elif file.endswith(".las"):
+            from q3dviewer.utils.cloud_io import load_las
+            cloud = load_las(file)
+        else:
+            print("Not supported file type.")
+            return
+        self.set_data(data=cloud, append=append)
+
+        has_intensity = cloud['irgb'][0] & 0xff000000 > 0
+        has_rgb = cloud['irgb'][0] & 0x00ffffff > 0
+
+        if has_rgb:
+            self.set_color_mode('RGB')
+        elif has_intensity:
+            self.set_color_mode('I')
+        else:
+            self.set_color_mode('FLAT')
+
+        return cloud
+
+    def set_path(self, path):
+        self.save_path = path

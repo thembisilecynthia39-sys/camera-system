@@ -1,0 +1,173 @@
+"""
+Copyright 2024 Panasonic Advanced Technology Development Co.,Ltd. (Liu Yang)
+Distributed under MIT license. See LICENSE for more information.
+"""
+
+from q3dviewer.Qt import QtCore
+from q3dviewer.Qt.QtWidgets import QWidget, QComboBox, QVBoxLayout, QLabel, QLineEdit, QCheckBox, QGroupBox
+from q3dviewer.Qt.QtGui import QKeyEvent
+from q3dviewer.base_glwidget import BaseGLWidget
+from q3dviewer.utils import text_to_rgba
+
+
+class SettingWindow(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.combo_items = QComboBox()
+        self.combo_items.currentIndexChanged.connect(self.on_combo_selection)
+        main_layout = QVBoxLayout()
+        main_layout.setAlignment(QtCore.Qt.AlignTop)
+        main_layout.addWidget(self.combo_items)
+        self.layout = QVBoxLayout()
+        main_layout.addLayout(self.layout)
+        self.setLayout(main_layout)
+        self.setWindowTitle("Setting Window")
+        self.setGeometry(200, 200, 300, 200)
+        self.items = {}
+
+    def add_setting(self, name, item):
+        self.items.update({name: item})
+        self.combo_items.addItem("%s(%s)" % (name, item.__class__.__name__))
+
+    def clear_setting(self):
+        while self.layout.count():
+            child = self.layout.takeAt(0)
+            if child.widget():
+                child.widget().deleteLater()
+
+    def on_combo_selection(self, index):
+        # remove all setting of previous widget
+        self.clear_setting()
+        key = list(self.items.keys())
+        item = self.items[key[index]]
+        group_box = QGroupBox()
+        group_layout = QVBoxLayout()
+        item.add_setting(group_layout)
+        group_box.setLayout(group_layout)
+        self.layout.addWidget(group_box)
+
+
+class GLWidget(BaseGLWidget):
+    def __init__(self):
+        self.followed_name = 'none'
+        self.named_items = {}
+        self.color_str = 'black'
+        self.followable_item_name = None
+        self.setting_window = SettingWindow()
+        self.enable_show_center = True
+        self.old_center = None
+        super(GLWidget, self).__init__()
+
+    def keyPressEvent(self, ev: QKeyEvent):
+        if ev.key() == QtCore.Qt.Key_M:  # setting menu
+            print("Open setting windows")
+            self.open_setting_window()            
+        else:
+            super().keyPressEvent(ev)
+        if ev.key() == QtCore.Qt.Key_F:  # reset follow
+            if self.followable_item_name is None:
+                self.initial_followable()
+
+            if self.followed_name != 'none':
+                self.followed_name = 'none'
+                print("Reset follow.")
+            elif len(self.followable_item_name) > 1:
+                self.followed_name = self.followable_item_name[1]
+                print("Set follow to ", self.followed_name)
+            else:
+                pass # do nothing
+
+    def on_followable_selection(self, index):
+        self.followed_name = self.followable_item_name[index]
+
+    def mouseDoubleClickEvent(self, event):
+        """Double click to set center."""
+        p = self.get_point(event.x(), event.y())
+        if p is not None:
+            self.set_center(p)
+        super().mouseDoubleClickEvent(event)
+
+    def update(self):
+        if self.followed_name != 'none':
+            new_center = self.named_items[self.followed_name].T[:3, 3]
+            if self.old_center is None:
+                self.old_center = self.center
+                return
+            delta = new_center - self.old_center
+            self.set_center(self.center + delta)
+            self.old_center = new_center
+        super().update()
+
+    def add_setting(self, layout):
+        label_color = QLabel("Set background color:")
+        layout.addWidget(label_color)
+        color_edit = QLineEdit()
+        color_edit.setToolTip("'using hex color, i.e. #FF4500")
+        color_edit.setText(self.color_str)
+        color_edit.textChanged.connect(self.set_bg_color)
+        layout.addWidget(color_edit)
+        
+        label_focus = QLabel("Set Focus:")
+        combo_focus = QComboBox()
+    
+        if self.followable_item_name is None:
+            self.initial_followable()
+
+        for name in self.followable_item_name:
+            combo_focus.addItem(name)
+        combo_focus.currentIndexChanged.connect(self.on_followable_selection)
+        layout.addWidget(label_focus)
+        layout.addWidget(combo_focus)
+
+        checkbox_show_center = QCheckBox("Show Center Point")
+        checkbox_show_center.setChecked(self.enable_show_center)
+        checkbox_show_center.stateChanged.connect(self.change_show_center)
+        layout.addWidget(checkbox_show_center)
+
+    def initial_followable(self):
+        self.followable_item_name = ['none']
+        for name, item in self.named_items.items():
+            if item.__class__.__name__ == 'AxisItem' and not item._disable_setting:
+                self.followable_item_name.append(name)
+
+    def set_bg_color(self, color):
+        try:
+            self.color_str = color
+            red, green, blue, alpha = text_to_rgba(color)
+            self.set_color([red, green, blue, alpha])
+        except ValueError:
+            print("Invalid color format. Use mathplotlib color format.")
+
+    def add_item_with_name(self, name, item):
+        self.named_items.update({name: item})
+        if not item._disable_setting:
+            self.setting_window.add_setting(name, item)
+        super().add_item(item)
+
+    def open_setting_window(self):
+        if self.setting_window.isVisible():
+            self.setting_window.raise_()
+
+        else:
+            self.setting_window.show()
+
+    def change_show_center(self, state):
+        self.enable_show_center = state
+
+    def get_camera_pose(self):
+        """Get current camera pose parameters"""
+        camera_pose = {
+            'center': self.center.tolist() if hasattr(self.center, 'tolist') else list(self.center),
+            'euler': self.euler.tolist() if hasattr(self.euler, 'tolist') else list(self.euler),
+            'distance': float(self.dist),
+        }
+        return camera_pose
+
+    def set_camera_pose(self, config):
+        """Set camera pose from parameters"""
+        if 'center' in config and 'euler' in config and 'distance' in config:
+            self.set_center(config['center'])
+            self.set_euler(config['euler'])
+            self.set_dist(config['distance'])
+        else:
+            print("Invalid camera pose config")
