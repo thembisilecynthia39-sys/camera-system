@@ -1,0 +1,6 @@
+*.pro.user
+*.user
+*.o
+
+build/
+build-*/

@@ -1,0 +1,9 @@
+<RCC>
+    <qresource prefix="/">
+        <file>main.qml</file>
+        <file>MyScene.qml</file>
+        <file>SsaoMaterial.qml</file>
+        <file>FinalMaterial.qml</file>
+        <file>SsaoBlurMaterial.qml</file>
+    </qresource>
+</RCC>

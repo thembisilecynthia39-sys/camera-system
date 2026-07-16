@@ -1,0 +1,58 @@
+# Nested repository history kept locally while this workspace is consolidated.
+.git-history-backups/
+
+# Python caches and local environments
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.venv-*/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.pyright/
+.ipynb_checkpoints/
+
+# Editors and OS metadata
+.vscode/
+.idea/
+.DS_Store
+
+# Python/build outputs
+build/
+build-*/
+dist/
+*.o
+*.so
+*.a
+*.pro.user
+*.user
+
+# Local capture, recording, reconstruction and runtime output
+/captures/
+/recordings/
+/result/
+/multiwebcam/captures/
+/multiwebcam/recordings/
+/multiwebcam/artifacts/
+/multiwebcam/multiwebcam.toml
+/multiwebcam/multiwebcam.toml.old
+/Tx_Rx/staging/*
+!/Tx_Rx/staging/.gitkeep
+
+# Generated media and reconstruction results
+*.ply
+*.mp4
+
+# Model binaries are deployment inputs, not source files
+/multiwebcam/models/*.pt
+/multiwebcam/models/*.onnx
+/multiwebcam/models/*.engine
+*.engine
+
+# Local logs and temporary directories
+*.log
+tmp/
+**/tmp/
+*.bak
+*.old

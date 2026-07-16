@@ -1,0 +1,12 @@
+schema_version: "1.0"
+staging_root: /home/jetson/3DGS/camera_system/Tx_Rx/staging
+server_url: http://10.150.14.62:8000
+remote_task_root: /home/yp/GaussianObject/rx_tasks
+upload_timeout_seconds: 300
+result_root: /home/jetson/3DGS/camera_system/result
+result_layout: capture_flat
+request_timeout_seconds: 300
+status_poll_interval_seconds: 2
+reconstruction_timeout_seconds: 21600
+download_timeout_seconds: 600
+max_ply_size_bytes: 2147483648
