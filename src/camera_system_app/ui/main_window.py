@@ -57,7 +57,7 @@ class MainWindow(QMainWindow):
 
         sidebar = QFrame()
         sidebar.setObjectName("sidebar")
-        sidebar.setFixedWidth(224)
+        sidebar.setFixedWidth(248)
         sidebar_layout = QVBoxLayout(sidebar)
         sidebar_layout.setContentsMargins(14, 18, 14, 16)
         sidebar_layout.setSpacing(14)
@@ -84,7 +84,7 @@ class MainWindow(QMainWindow):
         self.navigation.setAccessibleName("主功能导航")
         for label in self.NAVIGATION_LABELS:
             item = QListWidgetItem(label)
-            item.setSizeHint(QSize(194, 50))
+            item.setSizeHint(QSize(218, 50))
             self.navigation.addItem(item)
         sidebar_layout.addWidget(self.navigation, 1)
 

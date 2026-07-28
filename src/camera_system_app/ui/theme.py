@@ -96,6 +96,10 @@ _QSS = Template(
         border: 1px solid $light_border;
         border-radius: $radius_lg;
     }
+    QScrollArea#pageScroll, QWidget#pageScrollContent {
+        background: transparent;
+        border: none;
+    }
     QFrame#statusBanner {
         background: $light_interactive_subtle;
         border: 1px solid $light_interactive_border;
@@ -123,7 +127,16 @@ _QSS = Template(
         color: $light_danger;
     }
     QFrame#statusBanner QLabel {
-        color: inherit;
+        color: $light_interactive;
+    }
+    QFrame#statusBanner[status="success"] QLabel {
+        color: $light_success;
+    }
+    QFrame#statusBanner[status="warning"] QLabel {
+        color: $light_warning;
+    }
+    QFrame#statusBanner[status="danger"] QLabel {
+        color: $light_danger;
     }
 
     QFrame#emptyState {
@@ -418,6 +431,10 @@ _QSS = Template(
         border-color: $dark_border;
         color: $dark_text_muted;
     }
+    QWidget#capturePageSurface QFrame#statusBanner QLabel,
+    QWidget#resultPageSurface QFrame#statusBanner QLabel {
+        color: $dark_text_muted;
+    }
     QWidget#capturePageSurface QFrame#statusBanner {
         border-left: none;
         border-right: none;
@@ -430,16 +447,28 @@ _QSS = Template(
         border-color: $dark_warning;
         color: $dark_warning;
     }
+    QWidget#capturePageSurface QFrame#statusBanner[status="warning"] QLabel,
+    QWidget#resultPageSurface QFrame#statusBanner[status="warning"] QLabel {
+        color: $dark_warning;
+    }
     QWidget#capturePageSurface QFrame#statusBanner[status="success"],
     QWidget#resultPageSurface QFrame#statusBanner[status="success"] {
         background: $dark_success_background;
         border-color: $dark_interactive;
         color: $dark_success;
     }
+    QWidget#capturePageSurface QFrame#statusBanner[status="success"] QLabel,
+    QWidget#resultPageSurface QFrame#statusBanner[status="success"] QLabel {
+        color: $dark_success;
+    }
     QWidget#capturePageSurface QFrame#statusBanner[status="danger"],
     QWidget#resultPageSurface QFrame#statusBanner[status="danger"] {
         background: $dark_danger_background;
         border-color: $dark_danger;
+        color: $dark_danger;
+    }
+    QWidget#capturePageSurface QFrame#statusBanner[status="danger"] QLabel,
+    QWidget#resultPageSurface QFrame#statusBanner[status="danger"] QLabel {
         color: $dark_danger;
     }
     QWidget#capturePageSurface QFrame#emptyState,

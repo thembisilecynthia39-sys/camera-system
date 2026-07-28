@@ -1,6 +1,13 @@
 """Base helpers for shell pages."""
 
-from PySide6.QtWidgets import QFrame, QLabel, QVBoxLayout, QWidget
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import (
+    QFrame,
+    QLabel,
+    QScrollArea,
+    QVBoxLayout,
+    QWidget,
+)
 
 from camera_system_app.ui.widgets import PageHeader
 
@@ -12,13 +19,32 @@ class BasePage(QWidget):
         description: str,
         parent=None,
         eyebrow: str = "",
+        scrollable: bool = False,
     ) -> None:
         super().__init__(parent)
         self.setObjectName("pageSurface")
-        self.layout = QVBoxLayout(self)
-        self.layout.setContentsMargins(28, 24, 28, 24)
-        self.layout.setSpacing(18)
-        self.layout.addWidget(PageHeader(title, description, eyebrow))
+        root_layout = QVBoxLayout(self)
+        root_layout.setContentsMargins(28, 24, 28, 24)
+        root_layout.setSpacing(18)
+        root_layout.addWidget(PageHeader(title, description, eyebrow))
+
+        self._scroll = None
+        if scrollable:
+            self._scroll = QScrollArea()
+            self._scroll.setObjectName("pageScroll")
+            self._scroll.setFrameShape(QFrame.NoFrame)
+            self._scroll.setWidgetResizable(True)
+            self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            self._scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+            content = QWidget()
+            content.setObjectName("pageScrollContent")
+            self.layout = QVBoxLayout(content)
+            self.layout.setContentsMargins(0, 0, 8, 0)
+            self.layout.setSpacing(18)
+            self._scroll.setWidget(content)
+            root_layout.addWidget(self._scroll, 1)
+        else:
+            self.layout = root_layout
 
     def add_card(
         self,

@@ -3,6 +3,10 @@
 from pathlib import Path
 import re
 
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QPalette
+from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
+
 from camera_system_app.bootstrap import build_context
 from camera_system_app.domain import (
     DiagnosticCheck,
@@ -87,6 +91,42 @@ def test_status_banner_exposes_semantic_symbol_and_accessible_text(qapp):
     assert "连接正常" in banner.accessibleName()
 
 
+def test_status_banner_child_text_uses_light_semantic_color(qapp):
+    previous_stylesheet = qapp.styleSheet()
+    try:
+        qapp.setStyleSheet(application_stylesheet())
+        banner = StatusBanner("网络较慢", "warning")
+        banner.show()
+        qapp.processEvents()
+
+        actual = banner._text.palette().color(QPalette.WindowText).name().upper()
+
+        assert actual == SEMANTIC_LIGHT["warning"].upper()
+    finally:
+        banner.close()
+        qapp.setStyleSheet(previous_stylesheet)
+
+
+def test_status_banner_child_text_uses_dark_semantic_color(qapp):
+    previous_stylesheet = qapp.styleSheet()
+    try:
+        qapp.setStyleSheet(application_stylesheet())
+        surface = QWidget()
+        surface.setObjectName("resultPageSurface")
+        layout = QVBoxLayout(surface)
+        banner = StatusBanner("网络较慢", "warning")
+        layout.addWidget(banner)
+        surface.show()
+        qapp.processEvents()
+
+        actual = banner._text.palette().color(QPalette.WindowText).name().upper()
+
+        assert actual == SEMANTIC_DARK["warning"].upper()
+    finally:
+        surface.close()
+        qapp.setStyleSheet(previous_stylesheet)
+
+
 def test_empty_state_action_is_optional_and_emits(qapp):
     state = EmptyState(
         "○",
@@ -145,6 +185,27 @@ def test_numbered_navigation_preserves_page_indexes(
     assert window.stack.currentWidget() is window.result_page
 
 
+def test_brand_title_fits_sidebar_at_minimum_window_size(
+    tmp_path, monkeypatch, qapp
+):
+    for name in ("CONFIG", "DATA", "STATE", "CACHE"):
+        monkeypatch.setenv("XDG_{}_HOME".format(name), str(tmp_path / name.lower()))
+    previous_stylesheet = qapp.styleSheet()
+    try:
+        qapp.setStyleSheet(application_stylesheet())
+        context = build_context(project_root=str(PROJECT_ROOT))
+        window = MainWindow(context.paths, context.settings)
+        window.resize(window.minimumSize())
+        window.show()
+        qapp.processEvents()
+        brand = window.findChild(QLabel, "brandTitle")
+
+        assert brand.width() >= brand.sizeHint().width()
+    finally:
+        window.close()
+        qapp.setStyleSheet(previous_stylesheet)
+
+
 def test_capture_empty_state_opens_diagnostics(
     tmp_path, monkeypatch, qapp
 ):
@@ -177,6 +238,14 @@ def test_transfer_progress_updates_numbered_workflow_stages(qapp, tmp_path):
     assert page._reconstruction_stage.progress.value() == 33
     assert "训练" in page._reconstruction_stage.accessibleName()
     assert page._download_stage.progress.value() == 25
+
+
+def test_transfer_workflow_scrolls_at_minimum_window_size(qapp, tmp_path):
+    page = TransferReconstructionPage("http://host:8000", str(tmp_path))
+
+    assert page._scroll is not None
+    assert page._scroll.widgetResizable()
+    assert page._scroll.verticalScrollBarPolicy() == Qt.ScrollBarAsNeeded
 
 
 def test_history_switches_between_empty_state_and_table(qapp, tmp_path):

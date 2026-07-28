@@ -35,6 +35,7 @@ class TransferReconstructionPage(BasePage):
             "从本地任务校验到结果下载，每一阶段都在后台执行并持续保存状态。",
             parent,
             eyebrow="工作流 02 · 处理与交付",
+            scrollable=True,
         )
         self._job = None
         self._selection_busy = False
