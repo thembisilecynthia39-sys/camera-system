@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from multiwebcam.pipeline.session import CaptureSession
+from multiwebcam.sources.config import FrameSourceConfig
+from multiwebcam.sources.device import FrameSource
 
 
 class _FakeSource:
@@ -81,3 +85,35 @@ def test_capture_session_signals_all_producers_before_waiting():
         ("wait", "a"),
         ("wait", "b"),
     ]
+
+
+def test_frame_source_warmup_observes_cancellation_and_releases_device(
+    monkeypatch,
+):
+    class Capture:
+        def __init__(self) -> None:
+            self.released = False
+
+        def read(self):
+            return False, None
+
+        def release(self):
+            self.released = True
+
+    capture = Capture()
+    source = FrameSource(
+        "/dev/video0",
+        FrameSourceConfig(warmup_frames=1),
+    )
+    monkeypatch.setattr(
+        source,
+        "_open_device",
+        lambda: setattr(source, "_cap", capture),
+    )
+    checks = iter((False, False, True))
+
+    with pytest.raises(InterruptedError, match="cancel"):
+        source.start(cancel_check=lambda: next(checks, True))
+
+    assert capture.released
+    assert not source.is_running

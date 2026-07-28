@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from queue import Queue
 
 from multiwebcam.profiles.settings import RecordingSettings
 from multiwebcam.recording.encoder import CameraEncoder
+from multiwebcam.recording.gstreamer import gstreamer_element_available
 from multiwebcam.recording.timestamps import TimestampCollector
 from multiwebcam.sources.frame_packet import FramePacket
 
@@ -60,13 +61,13 @@ class FrameRecorder:
         # After setting is_recording flag:
         recorder.start()
 
-        # When ready to stop (after clearing is_recording and pushing sentinels):
+        # When ready to stop (after clearing the producer recording flag):
         result = recorder.stop()
     """
 
     def __init__(
         self,
-        recording_queues: dict[str, Queue[FramePacket | None]],
+        recording_queues: dict[str, Queue[FramePacket]],
         output_dir: Path,
         cam_ids: dict[str, int],
         settings: RecordingSettings | None = None,
@@ -84,6 +85,18 @@ class FrameRecorder:
         self.output_dir = output_dir
         self.cam_ids = cam_ids
         self.settings = settings or RecordingSettings()
+        if (
+            self.settings.backend == "gstreamer"
+            and not gstreamer_element_available(
+                self.settings.jetson_encoder
+            )
+        ):
+            logger.warning(
+                "GStreamer encoder %s is unavailable; falling back to PyAV. "
+                "This Jetson model may not include NVENC hardware.",
+                self.settings.jetson_encoder,
+            )
+            self.settings = replace(self.settings, backend="pyav")
 
         self._encoders: list[CameraEncoder] = []
         self._timestamp_collector = TimestampCollector()
@@ -138,9 +151,33 @@ class FrameRecorder:
             )
             self._encoders.append(encoder)
 
-        # Start all encoders
-        for encoder in self._encoders:
-            encoder.start()
+        # Starting multiple encoder threads is transactional. If a later
+        # thread fails to start, stop and join every earlier one so an
+        # unsuccessful recording cannot leave background consumers behind.
+        try:
+            for encoder in self._encoders:
+                encoder.start()
+        except Exception:
+            logger.exception("Encoder startup failed; stopping partial recorder")
+            for encoder in self._encoders:
+                encoder.request_stop()
+            cleanup_deadline = time.monotonic() + 2.0
+            for encoder in self._encoders:
+                try:
+                    if not encoder.join(
+                        timeout=max(0.0, cleanup_deadline - time.monotonic())
+                    ):
+                        logger.error(
+                            "Encoder for cam_%s survived startup rollback",
+                            encoder.cam_id,
+                        )
+                except RuntimeError:
+                    # Thread.start() itself can fail before join() is legal.
+                    pass
+            self._encoders = []
+            self._start_time = None
+            self._running = False
+            raise
 
         self._start_time = time.perf_counter()
         self._running = True
@@ -150,9 +187,7 @@ class FrameRecorder:
         """
         Stop recording, drain remaining frames, finalize files.
 
-        This should be called AFTER:
-        1. Clearing the is_recording flag (producers stop pushing)
-        2. Pushing None sentinel to each recording queue
+        This should be called after clearing the producer recording flag.
 
         Args:
             drain_timeout: Maximum time to wait for each encoder thread (seconds)
@@ -172,6 +207,9 @@ class FrameRecorder:
             )
 
         logger.info("Stopping recording, draining encoder queues...")
+
+        for encoder in self._encoders:
+            encoder.request_stop()
 
         # Use one total deadline, not a full timeout per camera.
         deadline = time.monotonic() + max(0.0, drain_timeout)

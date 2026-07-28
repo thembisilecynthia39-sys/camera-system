@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 from queue import Empty, Queue
-from threading import Thread
+from threading import Event, Thread
 from typing import Callable
 
 import av
@@ -28,7 +28,7 @@ class CameraEncoder:
     1. Drains frames from the recording queue
     2. Encodes to MP4 via PyAV
     3. Reports timestamps to TimestampCollector
-    4. Exits when sentinel (None) is received
+    4. Exits after a control event is set and the data queue is drained
 
     The encoder runs in its own daemon thread.
     """
@@ -36,7 +36,7 @@ class CameraEncoder:
     def __init__(
         self,
         cam_id: int,
-        queue: Queue[FramePacket | None],
+        queue: Queue[FramePacket],
         output_path: Path,
         settings: RecordingSettings | None = None,
         timestamp_callback: Callable[[int, int, float], None] | None = None,
@@ -46,7 +46,7 @@ class CameraEncoder:
 
         Args:
             cam_id: Integer camera ID for logging and callbacks
-            queue: Queue to drain frames from (None = sentinel)
+            queue: Bounded frame data queue
             output_path: Path to write MP4 file
             settings: Recording settings
             timestamp_callback: Called for each frame: callback(cam_id, frame_index, frame_time)
@@ -61,6 +61,7 @@ class CameraEncoder:
         self._frames_written = 0
         self._errors: list[str] = []
         self._running = False
+        self._stop_event = Event()
 
     @property
     def frames_written(self) -> int:
@@ -83,6 +84,7 @@ class CameraEncoder:
             logger.warning(f"Encoder for cam_{self.cam_id} already running")
             return
 
+        self._stop_event.clear()
         self._thread = Thread(target=self._run, daemon=True)
         self._running = True
         self._thread.start()
@@ -104,11 +106,15 @@ class CameraEncoder:
         self._thread.join(timeout=timeout)
         return not self._thread.is_alive()
 
+    def request_stop(self) -> None:
+        """Stop after draining queued frames; never writes into the data queue."""
+        self._stop_event.set()
+
     def _run(self) -> None:
         """
         Encoder thread main loop.
 
-        Drains queue, encodes frames, reports timestamps. Exits when sentinel (None) received.
+        Drain frames and encode until request_stop() is set and the queue is empty.
         """
         if self.settings.backend == "gstreamer":
             self._run_gstreamer()
@@ -123,15 +129,11 @@ class CameraEncoder:
             while True:
                 # Wait for frame (blocking)
                 try:
-                    packet = self.queue.get(timeout=1.0)
+                    packet = self.queue.get(timeout=0.1)
                 except Empty:
-                    # Check for sentinel periodically even if queue is empty
+                    if self._stop_event.is_set():
+                        break
                     continue
-
-                # Sentinel = stop signal
-                if packet is None:
-                    logger.debug(f"Encoder for cam_{self.cam_id} received sentinel, stopping")
-                    break
 
                 # Initialize encoder on first frame (need resolution)
                 if first_frame:
@@ -259,9 +261,7 @@ class CameraEncoder:
         drained = 0
         while True:
             try:
-                packet = self.queue.get_nowait()
-                if packet is None:
-                    break
+                self.queue.get_nowait()
                 drained += 1
             except Empty:
                 break
@@ -275,13 +275,11 @@ class CameraEncoder:
         try:
             while True:
                 try:
-                    packet = self.queue.get(timeout=1.0)
+                    packet = self.queue.get(timeout=0.1)
                 except Empty:
+                    if self._stop_event.is_set():
+                        break
                     continue
-
-                if packet is None:
-                    logger.debug("Encoder for cam_%s received sentinel, stopping", self.cam_id)
-                    break
 
                 if writer is None:
                     height, width = packet.frame.shape[:2]

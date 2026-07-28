@@ -22,6 +22,8 @@ class AsyncObjectDetector:
         self._condition = Condition()
         self._shutdown = Event()
         self._thread: Thread | None = None
+        self._in_flight = False
+        self._replaced_pending = 0
 
     @property
     def backend_name(self) -> str:
@@ -35,6 +37,8 @@ class AsyncObjectDetector:
             if self._thread is None:
                 self._thread = Thread(target=self._run, daemon=True)
                 self._thread.start()
+            if device_path in self._pending:
+                self._replaced_pending += 1
             self._pending[device_path] = (frame, frame_index)
             self._condition.notify()
 
@@ -42,9 +46,25 @@ class AsyncObjectDetector:
         with self._condition:
             return dict(self._results)
 
+    @property
+    def pending_count(self) -> int:
+        with self._condition:
+            return len(self._pending)
+
+    @property
+    def in_flight(self) -> bool:
+        with self._condition:
+            return self._in_flight
+
+    @property
+    def replaced_pending_count(self) -> int:
+        with self._condition:
+            return self._replaced_pending
+
     def stop(self, timeout: float = 3.0) -> bool:
         self._shutdown.set()
         with self._condition:
+            self._pending.clear()
             self._condition.notify_all()
         close = getattr(self._detector, "close", None)
         if callable(close):
@@ -68,11 +88,20 @@ class AsyncObjectDetector:
                 self._pending = {}
 
             for device_path, (frame, frame_index) in pending.items():
+                if self._shutdown.is_set():
+                    return
+                with self._condition:
+                    self._in_flight = True
                 try:
                     result = self._detector.detect(frame, frame_index)
                 except Exception:
-                    logger.exception("Object detector failed for %s", device_path)
+                    if not self._shutdown.is_set():
+                        logger.exception("Object detector failed for %s", device_path)
                     continue
+                finally:
+                    with self._condition:
+                        self._in_flight = False
+                        self._condition.notify_all()
                 with self._condition:
                     previous = self._results.get(device_path)
                     if previous is None or result.frame_index >= previous.frame_index:

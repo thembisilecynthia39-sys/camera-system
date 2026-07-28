@@ -76,6 +76,13 @@ def run_gui(
     """Create and run the Qt shell without initializing optional hardware."""
 
     _ensure_qt_api(context.paths)
+    for variable in (
+        "OMP_NUM_THREADS",
+        "OPENBLAS_NUM_THREADS",
+        "MKL_NUM_THREADS",
+        "NUMEXPR_NUM_THREADS",
+    ):
+        os.environ.setdefault(variable, "2")
     os.environ.setdefault("RESOURCE_NAME", "camera-system")
     os.environ["Q3D_QT_IMPL"] = "PySide6"
     os.environ.setdefault("QT_OPENGL", "desktop")
@@ -199,6 +206,7 @@ def run_gui(
                 )
             )
         else:
+            viewer_bindings.set_capture_adapter(capture_adapter)
             capture_bindings = CaptureBindings(
                 window,
                 controller,

@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from queue import Empty, Full, Queue
-from threading import Event, Thread
+from threading import Event, Lock, Thread
 from typing import TYPE_CHECKING
 
 from multiwebcam.pipeline.frame_metadata import FrameMetadata
@@ -22,7 +22,7 @@ class QueueBundle:
     """Bundle of output queues for a single camera."""
 
     display: Queue[FramePacket]  # maxsize=1, drop-oldest
-    recording: Queue[FramePacket | None]  # large, blocking (only when recording); None = sentinel
+    recording: Queue[FramePacket]  # bounded, non-blocking while recording
     alignment: Queue[FrameMetadata]  # metadata only, for monitoring
 
 
@@ -56,6 +56,8 @@ class FrameProducer:
         source: FrameSource,
         queues: QueueBundle,
         is_recording: Event,
+        recording_overflow: Event | None = None,
+        recording_gate: Lock | None = None,
     ) -> None:
         """
         Initialize a FrameProducer.
@@ -68,17 +70,27 @@ class FrameProducer:
         self.source = source
         self.queues = queues
         self.is_recording = is_recording
+        self.recording_overflow = recording_overflow or Event()
+        self.recording_gate = recording_gate or Lock()
         self._thread: Thread | None = None
         self._shutdown_event = Event()
+        self._source_ready = Event()
         self._resume_event = Event()
         self._resume_event.set()  # Start in running state
+        self._paused_ack = Event()
         self._running = False  # Tracks thread lifecycle
         self._frames_captured = 0
+        self._recording_frames_dropped = 0
 
     @property
     def is_running(self) -> bool:
         """True if the producer thread is running."""
         return self._running
+
+    @property
+    def is_ready(self) -> bool:
+        """True after the source pipeline has successfully started."""
+        return self._running and self._source_ready.is_set()
 
     @property
     def device_path(self) -> str:
@@ -90,6 +102,11 @@ class FrameProducer:
         """Total frames captured by this producer."""
         return self._frames_captured
 
+    @property
+    def recording_frames_dropped(self) -> int:
+        """Frames rejected because the lossless recording queue was full."""
+        return self._recording_frames_dropped
+
     def pause(self) -> None:
         """Pause frame production. Producer thread blocks until resume()."""
         self._resume_event.clear()
@@ -97,11 +114,12 @@ class FrameProducer:
     def resume(self) -> None:
         """Resume frame production after pause."""
         self._resume_event.set()
+        self._paused_ack.clear()
 
     @property
     def is_paused(self) -> bool:
-        """True if producer is paused."""
-        return not self._resume_event.is_set()
+        """True after the producer thread has acknowledged the pause."""
+        return not self._resume_event.is_set() and self._paused_ack.is_set()
 
     def start(self) -> None:
         """Start the producer thread."""
@@ -110,6 +128,7 @@ class FrameProducer:
             return
 
         self._shutdown_event.clear()
+        self._source_ready.clear()
         self._thread = Thread(target=self._run, daemon=True)
         self._running = True
         self._thread.start()
@@ -162,6 +181,7 @@ class FrameProducer:
         try:
             try:
                 self.source.start()
+                self._source_ready.set()
             except Exception as e:
                 logger.error(f"Failed to start source {self.device_path}: {e}")
                 return
@@ -169,8 +189,12 @@ class FrameProducer:
             while not self._shutdown_event.is_set():
                 try:
                     for packet in self.source:
-                        # Block if paused
+                        # Acknowledge that no more packets will be published
+                        # before blocking. GPU handoff waits on this event.
+                        if not self._resume_event.is_set():
+                            self._paused_ack.set()
                         self._resume_event.wait()
+                        self._paused_ack.clear()
 
                         # Check shutdown after resume to avoid processing one more frame
                         if self._shutdown_event.is_set():
@@ -203,9 +227,22 @@ class FrameProducer:
                                 pass
                             self.queues.alignment.put_nowait(metadata)
 
-                        # Recording queue: conditional on is_recording flag
-                        if self.is_recording.is_set():
-                            self.queues.recording.put(packet)
+                        # Never apply encoder backpressure to the camera reader.
+                        # A full queue aborts recording instead of stalling USB
+                        # capture and growing latency across every consumer.
+                        with self.recording_gate:
+                            if self.is_recording.is_set():
+                                try:
+                                    self.queues.recording.put_nowait(packet)
+                                except Full:
+                                    self._recording_frames_dropped += 1
+                                    self.recording_overflow.set()
+                                    self.is_recording.clear()
+                                    logger.error(
+                                        "Recording queue overflow for %s; "
+                                        "recording aborted without blocking capture",
+                                        self.device_path,
+                                    )
 
                     # Iterator exhausted normally
                     break
@@ -238,9 +275,12 @@ class FrameProducer:
                         )
                         break
         finally:
+            self._paused_ack.clear()
+            self._source_ready.clear()
             try:
                 self.source.stop()
             except Exception:
                 logger.exception("Error while closing source %s", self.device_path)
 
+            self._running = False
             logger.debug(f"Producer thread exiting for {self.device_path}")

@@ -22,6 +22,7 @@ class MultiWebcamCaptureAdapter(QObject):
     state_changed = Signal(object)
     capture_completed = Signal(object)
     view_changed = Signal(object)
+    gpu_resources_ready = Signal(bool)
 
     def __init__(
         self,
@@ -44,11 +45,19 @@ class MultiWebcamCaptureAdapter(QObject):
         self._stopped = False
         self._coordinator_reported_stopped = False
         self._result_review_active = False
+        self._gpu_resources_ready = False
 
         self._coordinator.runtime_state_changed.connect(self._on_runtime_state)
         self._coordinator.capture_progress_changed.connect(self._on_capture_progress)
         self._coordinator.capture_completed.connect(self._on_capture_completed)
         self._coordinator.capture_available.connect(self._on_capture_available)
+        resources_released = getattr(
+            self._coordinator,
+            "model_resources_released",
+            None,
+        )
+        if resources_released is not None:
+            resources_released.connect(self._on_gpu_resources_released)
 
     @property
     def coordinator(self):
@@ -95,10 +104,25 @@ class MultiWebcamCaptureAdapter(QObject):
         """Transfer camera/inference compute to the result viewer."""
 
         self._result_review_active = bool(active)
+        if active:
+            self._gpu_resources_ready = False
+            self.gpu_resources_ready.emit(False)
+        else:
+            self._gpu_resources_ready = False
         set_model_mode = getattr(self._coordinator, "set_model_mode", None)
         if not callable(set_model_mode):
             return True
         return set_model_mode(self._result_review_active) is not False
+
+    @property
+    def result_review_gpu_ready(self) -> bool:
+        return self._result_review_active and self._gpu_resources_ready
+
+    def _on_gpu_resources_released(self, released: bool) -> None:
+        self._gpu_resources_ready = bool(
+            released and self._result_review_active
+        )
+        self.gpu_resources_ready.emit(self._gpu_resources_ready)
 
     def show_grid(self) -> None:
         if self._stopped:

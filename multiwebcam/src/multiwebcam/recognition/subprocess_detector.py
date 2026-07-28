@@ -9,8 +9,8 @@ import subprocess
 from collections import deque
 from pathlib import Path
 from queue import Empty, Queue
-from threading import Thread
-from time import perf_counter
+from threading import Event, Thread
+from time import monotonic, perf_counter
 
 import cv2
 import numpy as np
@@ -33,7 +33,11 @@ class SubprocessObjectDetector:
 
     backend_name = "subprocess"
 
-    def __init__(self, settings: InferenceSettings) -> None:
+    def __init__(
+        self,
+        settings: InferenceSettings,
+        cancel_event: Event | None = None,
+    ) -> None:
         if not settings.service_python and not settings.service_conda_env:
             raise ValueError("Inference backend 'subprocess' requires service_python or service_conda_env")
 
@@ -45,14 +49,36 @@ class SubprocessObjectDetector:
         self._stderr_thread = Thread(target=self._drain_stderr, daemon=True)
         self._stderr_thread.start()
         try:
-            self._await_ready()
+            self._await_ready(cancel_event)
         except Exception:
             self.close()
             raise
 
     def detect(self, frame: np.ndarray, frame_index: int) -> DetectionResult:
         started = perf_counter()
-        success, encoded = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 90])
+        source_height, source_width = frame.shape[:2]
+        input_width, input_height = self._settings.input_size
+        scale = min(
+            1.0,
+            input_width / float(max(1, source_width)),
+            input_height / float(max(1, source_height)),
+        )
+        transport_frame = frame
+        if scale < 1.0:
+            transport_frame = cv2.resize(
+                frame,
+                (
+                    max(1, round(source_width * scale)),
+                    max(1, round(source_height * scale)),
+                ),
+                interpolation=cv2.INTER_AREA,
+            )
+        transport_height, transport_width = transport_frame.shape[:2]
+        success, encoded = cv2.imencode(
+            ".jpg",
+            transport_frame,
+            [int(cv2.IMWRITE_JPEG_QUALITY), 80],
+        )
         if not success:
             raise RuntimeError("Failed to encode frame for subprocess inference")
 
@@ -73,10 +99,14 @@ class SubprocessObjectDetector:
         region = None
         if region_payload is not None:
             region = ObjectRegion(
-                x=int(region_payload["x"]),
-                y=int(region_payload["y"]),
-                width=int(region_payload["width"]),
-                height=int(region_payload["height"]),
+                x=round(int(region_payload["x"]) * source_width / transport_width),
+                y=round(int(region_payload["y"]) * source_height / transport_height),
+                width=round(
+                    int(region_payload["width"]) * source_width / transport_width
+                ),
+                height=round(
+                    int(region_payload["height"]) * source_height / transport_height
+                ),
                 area_ratio=float(region_payload["area_ratio"]),
                 centeredness=float(region_payload["centeredness"]),
                 fill_ratio=float(region_payload["fill_ratio"]),
@@ -162,7 +192,7 @@ class SubprocessObjectDetector:
             ]
         raise RuntimeError("subprocess inference requires service_python or service_conda_env")
 
-    def _await_ready(self) -> None:
+    def _await_ready(self, cancel_event: Event | None = None) -> None:
         result = Queue(maxsize=1)
 
         def read_ready() -> None:
@@ -173,10 +203,18 @@ class SubprocessObjectDetector:
 
         reader = Thread(target=read_ready, daemon=True)
         reader.start()
-        try:
-            response, error = result.get(timeout=30.0)
-        except Empty as exc:
-            raise RuntimeError("inference service startup timed out") from exc
+        deadline = monotonic() + 30.0
+        while True:
+            if cancel_event is not None and cancel_event.is_set():
+                raise RuntimeError("inference service startup cancelled")
+            remaining = deadline - monotonic()
+            if remaining <= 0:
+                raise RuntimeError("inference service startup timed out")
+            try:
+                response, error = result.get(timeout=min(0.1, remaining))
+                break
+            except Empty:
+                continue
         if error is not None:
             raise error
         if response.get("status") != "ready":

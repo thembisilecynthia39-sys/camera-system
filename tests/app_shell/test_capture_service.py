@@ -37,6 +37,7 @@ class _FakeCoordinator(QObject):
     capture_progress_changed = Signal(object)
     capture_completed = Signal(object)
     capture_available = Signal()
+    model_resources_released = Signal(bool)
 
     def __init__(self, project_root: Path, capture_only: bool = False) -> None:
         super().__init__()
@@ -118,6 +119,22 @@ def test_fake_camera_backend_runs_through_existing_capture_session():
     assert not session.producers_healthy
 
 
+def test_capture_session_releases_and_restarts_sources_for_gpu_handoff():
+    camera = FakeCameraBackend()
+    session = CaptureSession([camera], enable_monitoring=False)
+
+    session.start()
+    assert _wait_for_frame(session) is not None
+    assert session.suspend_all(timeout=1.0)
+    assert session.all_producers_quiesced
+    assert camera.released.is_set()
+
+    session.resume_all()
+    assert _wait_for_frame(session) is not None
+    assert camera.start_count >= 2
+    assert session.stop()
+
+
 def test_capture_adapter_start_and_stop_are_idempotent(qapp, tmp_path):
     adapter = MultiWebcamCaptureAdapter(
         tmp_path,
@@ -186,12 +203,17 @@ def test_capture_adapter_transfers_compute_to_result_review(qapp, tmp_path):
 
     assert adapter.set_result_review_active(True)
     assert adapter.coordinator.model_mode_calls == [True]
+    assert not adapter.result_review_gpu_ready
+
+    adapter.coordinator.model_resources_released.emit(True)
+    assert adapter.result_review_gpu_ready
 
     adapter.coordinator.capture_available.emit()
     assert adapter.coordinator.model_mode_calls[-1] is True
 
     assert adapter.set_result_review_active(False)
     assert adapter.coordinator.model_mode_calls[-1] is False
+    assert not adapter.result_review_gpu_ready
     adapter.stop()
 
 

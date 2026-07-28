@@ -142,7 +142,13 @@ class _CameraSwitchWorker(QThread):
 
     def run(self) -> None:
         try:
-            result = self._coordinator._switch_ignore_state_blocking(self._source_id, self._ignore)
+            result = self._coordinator._switch_ignore_state_blocking(
+                self._source_id,
+                self._ignore,
+                cancel_check=self.isInterruptionRequested,
+            )
+        except InterruptedError:
+            return
         except Exception as exc:
             logger.exception("Camera switch failed")
             result = CameraSwitchResult(
@@ -161,7 +167,13 @@ class _DiscoveryWorker(QThread):
 
     def run(self) -> None:
         try:
-            self.discovery_completed.emit(discover_frame_sources(), None)
+            result = discover_frame_sources(
+                cancel_check=self.isInterruptionRequested,
+            )
+            if not self.isInterruptionRequested():
+                self.discovery_completed.emit(result, None)
+        except InterruptedError:
+            return
         except Exception as exc:
             logger.exception("Camera discovery failed")
             self.discovery_completed.emit(None, str(exc))
@@ -227,9 +239,16 @@ class _TaskPackageWorker(QThread):
         try:
             from tx_rx.jetson_client import build_configured_task_package
 
-            result = build_configured_task_package(self._capture_dir)
+            result = build_configured_task_package(
+                self._capture_dir,
+                cancel_check=self.isInterruptionRequested,
+            )
+            if self.isInterruptionRequested():
+                return
             self.package_completed.emit(result, None)
         except Exception as exc:
+            if self.isInterruptionRequested():
+                return
             logger.exception("Task package generation failed for %s", self._capture_dir)
             self.package_completed.emit(None, str(exc).strip() or type(exc).__name__)
 
@@ -335,12 +354,21 @@ class _StagedUploadWorker(QThread):
             self.upload_completed.emit([], [str(exc).strip() or type(exc).__name__])
             return
         for index, task_dir in enumerate(self._task_dirs, start=1):
+            if self.isInterruptionRequested():
+                break
             self.upload_status.emit(f"正在上传 {index}/{total}: {task_dir.name}")
             try:
-                results.append(upload_staged_task(task_dir))
+                results.append(
+                    upload_staged_task(
+                        task_dir,
+                        cancel_check=self.isInterruptionRequested,
+                    )
+                )
             except Exception as exc:
                 logger.exception("Staged task upload failed for %s", task_dir)
                 errors.append(f"{task_dir.name}: {str(exc).strip() or type(exc).__name__}")
+                if self.isInterruptionRequested():
+                    break
         self.upload_completed.emit(results, errors)
 
 
@@ -359,7 +387,11 @@ class _CaptureTransferWorker(QThread):
     def run(self) -> None:
         try:
             from tx_rx.config import load_config
-            from tx_rx.jetson_client import build_configured_task_package, upload_staged_task
+            from tx_rx.jetson_client import (
+                TaskUploadError,
+                build_configured_task_package,
+                upload_staged_task,
+            )
             from tx_rx.jetson_client.transfer import (
                 acknowledge_result,
                 download_ply,
@@ -367,15 +399,24 @@ class _CaptureTransferWorker(QThread):
                 poll_status,
             )
 
+            def check_interruption() -> None:
+                if self.isInterruptionRequested():
+                    raise TaskUploadError("transfer cancelled")
+
+            check_interruption()
             config = load_config()
             self.log_message.emit(f"开始校验本地任务：{self._capture_dir.name}")
             self.progress_changed.emit(10, "正在校验照片文件夹...")
             package = build_configured_task_package(self._capture_dir)
+            check_interruption()
             self.log_message.emit(f"照片校验通过：capture_id={package.capture_id}")
             self.log_message.emit(f"任务整理目录：{package.staging_dir}")
             self.progress_changed.emit(35, "8张照片已整理，正在上传至 WSL...")
             self.log_message.emit("正在请求 WSL /upload，请等待服务端确认...")
-            result = upload_staged_task(package.staging_dir)
+            result = upload_staged_task(
+                package.staging_dir,
+                cancel_check=self.isInterruptionRequested,
+            )
             response = result.upload_response
             self.log_message.emit("WSL /upload 已返回并通过协议校验")
             self.log_message.emit(
@@ -419,7 +460,13 @@ class _CaptureTransferWorker(QThread):
             )
             self.log_message.emit(f"训练完成：status={status.status.value}")
             self.progress_changed.emit(78, "训练完成，正在获取模型元数据...")
-            metadata = get_ply_metadata(result.task_id, package.capture_id, config)
+            check_interruption()
+            metadata = get_ply_metadata(
+                result.task_id,
+                package.capture_id,
+                config,
+                cancel_check=self.isInterruptionRequested,
+            )
             self.log_message.emit(
                 f"模型元数据通过校验：{metadata.filename}, {metadata.file_size} bytes, "
                 f"{metadata.chunk_count} 块"
@@ -449,7 +496,13 @@ class _CaptureTransferWorker(QThread):
                 progress_callback=download_progress,
             )
             self.progress_changed.emit(99, "模型下载完成，正在执行完整校验和 ACK...")
-            ack = acknowledge_result(metadata, final_path, config)
+            check_interruption()
+            ack = acknowledge_result(
+                metadata,
+                final_path,
+                config,
+                cancel_check=self.isInterruptionRequested,
+            )
             self.log_message.emit(f"模型已校验并保存：{final_path}")
             self.log_message.emit(f"接收确认：message_type={ack.message_type}")
             self.progress_changed.emit(100, "完整闭环完成：模型已安全保存到 Jetson")
@@ -479,6 +532,7 @@ class CaptureCoordinator(QObject):
     runtime_state_changed = Signal(str, object)
     capture_progress_changed = Signal(object)
     capture_completed = Signal(object)
+    model_resources_released = Signal(bool)
 
     def __init__(
         self,
@@ -648,6 +702,9 @@ class CaptureCoordinator(QObject):
                 self._session,
                 self.get_source_id_lookup(),
                 inference_settings=self._settings.inference,
+            )
+            self._presenter.model_resources_released.connect(
+                self.model_resources_released.emit
             )
 
     def _rebind_profiles_if_topology_changed(
@@ -989,6 +1046,16 @@ class CaptureCoordinator(QObject):
         self._connect(p.recording_stopping, view.set_stopping)
         self._connect(p.recording_queue_depth, view.update_queue_depth)
         self._connect(p.recording_duration, view.update_duration)
+        self._connect(
+            p.recording_failed,
+            lambda message: self.runtime_state_changed.emit(
+                "error",
+                {
+                    "message": message,
+                    "camera_count": len(self.get_source_id_lookup()),
+                },
+            ),
+        )
 
         def rec_true() -> None:
             view.set_recording(True)
@@ -1092,6 +1159,8 @@ class CaptureCoordinator(QObject):
     def set_model_mode(self, active: bool) -> bool:
         """Pause or resume capture work for an externally hosted 3DGS viewer."""
         if self._presenter is None:
+            if active:
+                self.model_resources_released.emit(True)
             return True
         if active:
             if self._presenter.mode == "model":
@@ -1104,7 +1173,7 @@ class CaptureCoordinator(QObject):
                 logger.warning("Cannot pause cameras for 3DGS while recording")
                 return False
             return True
-        if self._presenter.mode == "model":
+        if self._presenter.mode in {"model", "quiescing"}:
             self._presenter.enter_grid_mode()
             self._pause_ignored_producers()
             if self._grid_view is not None:
@@ -2047,7 +2116,17 @@ class CaptureCoordinator(QObject):
             can_toggle_ignore = bool(info.device_path and not info.error) and not is_active_low_anchor
             self._grid_view.set_source_ignore_enabled(source_id, can_toggle_ignore)
 
-    def _switch_ignore_state_blocking(self, source_id: int, ignore: bool) -> CameraSwitchResult:
+    def _switch_ignore_state_blocking(
+        self,
+        source_id: int,
+        ignore: bool,
+        cancel_check=None,
+    ) -> CameraSwitchResult:
+        def check_cancelled() -> None:
+            if cancel_check is not None and cancel_check():
+                raise InterruptedError("camera switch cancelled")
+
+        check_cancelled()
         if self._session is None:
             return CameraSwitchResult(source_id, ignore, {}, "No active capture session")
         if self._session.is_recording:
@@ -2061,15 +2140,24 @@ class CaptureCoordinator(QObject):
 
         if ignore:
             if info.device_path in self._session.active_device_paths:
+                check_cancelled()
                 self._session.remove_source(info.device_path)
                 self._runtime_configs.pop(source_id, None)
+                check_cancelled()
             ignore_updates[source_id] = True
-            activated = self._activate_next_standby_blocking(ignore_updates, excluded_source_id=source_id)
+            activated = self._activate_next_standby_blocking(
+                ignore_updates,
+                excluded_source_id=source_id,
+                cancel_check=cancel_check,
+            )
             if activated:
                 return CameraSwitchResult(source_id, ignore, ignore_updates)
 
             try:
-                self._activate_source_blocking(source_id)
+                self._activate_source_blocking(
+                    source_id,
+                    cancel_check=cancel_check,
+                )
                 ignore_updates[source_id] = False
                 return CameraSwitchResult(
                     source_id,
@@ -2077,6 +2165,8 @@ class CaptureCoordinator(QObject):
                     ignore_updates,
                     "No standby source could replace the requested camera",
                 )
+            except InterruptedError:
+                raise
             except Exception as exc:
                 return CameraSwitchResult(source_id, ignore, ignore_updates, str(exc))
 
@@ -2088,7 +2178,11 @@ class CaptureCoordinator(QObject):
                 "Active camera pool is full",
             )
 
-        self._activate_source_blocking(source_id)
+        check_cancelled()
+        self._activate_source_blocking(
+            source_id,
+            cancel_check=cancel_check,
+        )
         ignore_updates[source_id] = False
         return CameraSwitchResult(source_id, ignore, ignore_updates)
 
@@ -2117,18 +2211,26 @@ class CaptureCoordinator(QObject):
         self,
         ignore_updates: dict[int, bool],
         excluded_source_id: int | None = None,
+        cancel_check=None,
     ) -> bool:
         if self._session is None:
             return False
         excluded_source_ids = {excluded_source_id} if excluded_source_id is not None else set()
         while len(self._session.active_device_paths) < self._max_active_sources:
+            if cancel_check is not None and cancel_check():
+                raise InterruptedError("camera switch cancelled")
             standby_id = self._choose_standby_source_id(ignore_updates, excluded_source_ids)
             if standby_id is None:
                 return False
             try:
-                self._activate_source_blocking(standby_id)
+                self._activate_source_blocking(
+                    standby_id,
+                    cancel_check=cancel_check,
+                )
                 ignore_updates[standby_id] = False
                 return True
+            except InterruptedError:
+                raise
             except Exception:
                 logger.exception("Failed to activate standby source %s", standby_id)
                 ignore_updates[standby_id] = True
@@ -2152,7 +2254,13 @@ class CaptureCoordinator(QObject):
                 return entry.source_id
         return None
 
-    def _activate_source_blocking(self, source_id: int) -> None:
+    def _activate_source_blocking(
+        self,
+        source_id: int,
+        cancel_check=None,
+    ) -> None:
+        if cancel_check is not None and cancel_check():
+            raise InterruptedError("camera switch cancelled")
         info = self._sources.get(source_id)
         if info is None or self._session is None or not info.device_path or info.error:
             return
@@ -2161,9 +2269,17 @@ class CaptureCoordinator(QObject):
 
         config = self._activation_config(info)
         source = FrameSource(info.device_path, config)
-        self._session.add_source(source)
+        if cancel_check is None:
+            self._session.add_source(source)
+        else:
+            self._session.add_source(
+                source,
+                cancel_check=cancel_check,
+            )
         self._runtime_configs[source_id] = config
         for name, cv in info.profile.controls.items():
+            if cancel_check is not None and cancel_check():
+                raise InterruptedError("camera switch cancelled")
             set_control(info.device_path, name, cv.value)
 
     def _activation_config(self, info: SourceInfo) -> FrameSourceConfig:
