@@ -106,3 +106,34 @@ def test_settings_are_saved_atomically_with_absolute_paths(tmp_path, monkeypatch
     assert context.paths.config_file.exists()
     assert not list(context.paths.config_dir.glob("*.tmp"))
 
+
+def test_diagnostic_table_uses_model_backed_rows(qapp):
+    from PySide6.QtCore import Qt
+
+    from camera_system_app.domain.diagnostics import (
+        DiagnosticCheck,
+        DiagnosticReport,
+        DiagnosticStatus,
+    )
+    from camera_system_app.ui.pages.diagnostics_log import DiagnosticTableModel
+
+    model = DiagnosticTableModel()
+    model.set_report(
+        DiagnosticReport.from_checks(
+            [
+                DiagnosticCheck(
+                    "摄像头",
+                    DiagnosticStatus.WARNING,
+                    "未发现设备",
+                    "可稍后刷新",
+                )
+            ]
+        )
+    )
+
+    assert model.rowCount() == 1
+    assert model.columnCount() == 4
+    assert model.headerData(1, Qt.Horizontal) == "检查项"
+    assert model.data(model.index(0, 0)) == "△ 提示"
+    assert model.data(model.index(0, 1)) == "摄像头"
+    assert model.data(model.index(0, 3)) == "可稍后刷新"

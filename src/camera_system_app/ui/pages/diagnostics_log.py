@@ -1,6 +1,6 @@
 """Combined logs and environment diagnostics page."""
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import QAbstractTableModel, Qt, Signal
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QHBoxLayout,
@@ -8,12 +8,58 @@ from PySide6.QtWidgets import (
     QLabel,
     QPlainTextEdit,
     QPushButton,
-    QTableWidget,
-    QTableWidgetItem,
+    QTableView,
 )
 
 from camera_system_app.domain.diagnostics import DiagnosticReport, DiagnosticStatus
 from camera_system_app.ui.pages.base import BasePage
+
+
+class DiagnosticTableModel(QAbstractTableModel):
+    """Expose diagnostics without item-owned objects on the JetPack Qt shim."""
+
+    HEADERS = ("状态", "检查项", "摘要", "详情")
+    STATUS_LABELS = {
+        DiagnosticStatus.PASS: "✓ 通过",
+        DiagnosticStatus.WARNING: "△ 提示",
+        DiagnosticStatus.FAILURE: "✕ 失败",
+    }
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self._checks = ()
+
+    def rowCount(self, _parent=None) -> int:
+        return len(self._checks)
+
+    def columnCount(self, _parent=None) -> int:
+        return len(self.HEADERS)
+
+    def data(self, index, role=Qt.DisplayRole):
+        if role != Qt.DisplayRole or not index.isValid():
+            return None
+        check = self._checks[index.row()]
+        values = (
+            self.STATUS_LABELS[check.status],
+            check.name,
+            check.summary,
+            check.detail,
+        )
+        return values[index.column()]
+
+    def headerData(self, section, orientation, role=Qt.DisplayRole):
+        if (
+            role == Qt.DisplayRole
+            and orientation == Qt.Horizontal
+            and 0 <= section < len(self.HEADERS)
+        ):
+            return self.HEADERS[section]
+        return None
+
+    def set_report(self, report: DiagnosticReport) -> None:
+        self.beginResetModel()
+        self._checks = report.checks
+        self.endResetModel()
 
 
 class DiagnosticsLogPage(BasePage):
@@ -36,8 +82,9 @@ class DiagnosticsLogPage(BasePage):
         actions.addStretch(1)
         self.layout.addLayout(actions)
 
-        self._table = QTableWidget(0, 4)
-        self._table.setHorizontalHeaderLabels(["状态", "检查项", "摘要", "详情"])
+        self._table = QTableView()
+        self._table_model = DiagnosticTableModel(self._table)
+        self._table.setModel(self._table_model)
         self._table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self._table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self._table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
@@ -54,16 +101,7 @@ class DiagnosticsLogPage(BasePage):
         self.layout.addWidget(self._logs, 1)
 
     def set_report(self, report: DiagnosticReport) -> None:
-        labels = {
-            DiagnosticStatus.PASS: "✓ 通过",
-            DiagnosticStatus.WARNING: "△ 提示",
-            DiagnosticStatus.FAILURE: "✕ 失败",
-        }
-        self._table.setRowCount(len(report.checks))
-        for row, check in enumerate(report.checks):
-            values = [labels[check.status], check.name, check.summary, check.detail]
-            for column, value in enumerate(values):
-                self._table.setItem(row, column, QTableWidgetItem(value))
+        self._table_model.set_report(report)
         self._table.resizeRowsToContents()
 
     def set_log_text(self, text: str) -> None:
@@ -71,4 +109,3 @@ class DiagnosticsLogPage(BasePage):
         cursor = self._logs.textCursor()
         cursor.movePosition(cursor.End)
         self._logs.setTextCursor(cursor)
-
