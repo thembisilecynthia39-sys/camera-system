@@ -20,6 +20,21 @@ from camera_system_app.domain.diagnostics import (
 from camera_system_app.infrastructure.paths import AppPaths
 from camera_system_app import __version__
 
+_REQUIRED_JETSON_MODULES = (
+    "numpy",
+    "cv2",
+    "av",
+    "yaml",
+    "pydantic",
+    "requests",
+    "OpenGL",
+    "PIL",
+    "platformdirs",
+    "rtoml",
+    "meshio",
+)
+_OPTIONAL_JETSON_MODULES = ("qfluentwidgets", "onnx")
+
 
 class DiagnosticService:
     """Inspect local availability without starting optional subsystems."""
@@ -32,6 +47,7 @@ class DiagnosticService:
         checks = [
             self._runtime_check(),
             self._python_check(),
+            self._dependency_check(),
             self._qt_check(),
             self._opencv_check(),
             self._graphics_check(),
@@ -63,6 +79,60 @@ class DiagnosticService:
             DiagnosticStatus.PASS if supported else DiagnosticStatus.FAILURE,
             platform.python_version(),
             sys.executable,
+        )
+
+    def _dependency_check(self) -> DiagnosticCheck:
+        """Validate project imports without judging unrelated system packages."""
+
+        missing_required = [
+            name
+            for name in _REQUIRED_JETSON_MODULES
+            if importlib.util.find_spec(name) is None
+        ]
+        missing_optional = [
+            name
+            for name in _OPTIONAL_JETSON_MODULES
+            if importlib.util.find_spec(name) is None
+        ]
+        optional_notes = [
+            "{} 未安装".format(name)
+            for name in missing_optional
+        ]
+
+        if importlib.util.find_spec("qfluentwidgets") is not None:
+            try:
+                from PySide6.QtCore import qVersion
+
+                qt_parts = tuple(
+                    int(part) for part in qVersion().split(".")[:2]
+                )
+            except Exception:
+                qt_parts = ()
+            if qt_parts and qt_parts < (5, 15):
+                optional_notes.append(
+                    "qfluentwidgets 的包元数据要求 Qt/PyQt >= 5.15；"
+                    "当前使用 JetPack Qt 兼容层和内置控件回退"
+                )
+
+        if missing_required:
+            return DiagnosticCheck(
+                "Python 项目依赖",
+                DiagnosticStatus.FAILURE,
+                "缺少核心运行依赖",
+                ", ".join(missing_required),
+            )
+        if optional_notes:
+            return DiagnosticCheck(
+                "Python 项目依赖",
+                DiagnosticStatus.WARNING,
+                "核心运行依赖可用；可选工具不完整",
+                "；".join(optional_notes),
+            )
+        return DiagnosticCheck(
+            "Python 项目依赖",
+            DiagnosticStatus.PASS,
+            "核心及可选项目依赖可用",
+            "JetPack 系统组件保持原生版本",
         )
 
     def _qt_check(self) -> DiagnosticCheck:
