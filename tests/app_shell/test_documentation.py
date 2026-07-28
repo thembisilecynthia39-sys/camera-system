@@ -1,6 +1,7 @@
 """Repository documentation and dependency-layout checks."""
 
 from pathlib import Path
+import re
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -51,3 +52,34 @@ def test_jetson_requirements_do_not_replace_platform_packages():
             or entry.startswith(package + "<")
             for entry in entries
         )
+
+
+def test_root_readme_covers_operator_and_developer_workflows():
+    readme = (PROJECT_ROOT / "README.md").read_text(encoding="utf-8")
+    required_text = (
+        "## 支持平台",
+        "## 快速开始",
+        "./scripts/jetson/install.sh",
+        "./scripts/jetson/diagnose.sh",
+        "./scripts/jetson/run.sh",
+        "## 配置",
+        "## 取消、超时与安全退出",
+        "## 开发与测试",
+        "requirements/dev.txt",
+        "## 常见问题",
+    )
+
+    for text in required_text:
+        assert text in readme
+
+
+def test_root_readme_relative_links_resolve():
+    readme_path = PROJECT_ROOT / "README.md"
+    readme = readme_path.read_text(encoding="utf-8")
+    targets = re.findall(r"!?\[[^\]]*\]\(([^)]+)\)", readme)
+
+    for raw_target in targets:
+        target = raw_target.strip().strip("<>").split("#", 1)[0]
+        if not target or "://" in target or target.startswith("mailto:"):
+            continue
+        assert (readme_path.parent / target).resolve().exists(), raw_target

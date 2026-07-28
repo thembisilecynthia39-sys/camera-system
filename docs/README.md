@@ -6,6 +6,7 @@
 
 - [Jetson 用户指南](user/JETSON_USER_GUIDE.md)
 - [工作区总览](../README.md)
+- [Python 依赖说明](../requirements/README.md)
 - [multiwebcam 使用说明](../multiwebcam/README.md)
 - [Tx_Rx 使用说明](../Tx_Rx/README.md)
 - [3DGSviewer 使用说明](../3DGSviewer/README.md)
