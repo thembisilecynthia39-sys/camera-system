@@ -1,0 +1,3 @@
+# Repository checks on the JetPack Python 3.8 runtime.
+-r jetson.txt
+pytest>=7,<9
