@@ -14,6 +14,7 @@
 ## 开发文档
 
 - [架构与开发约定](development/ARCHITECTURE.md)
+- [UI 设计系统与截图基线](development/UI_DESIGN_SYSTEM.md)
 - [multiwebcam 文档索引](../multiwebcam/docs/README.md)
 - [q3dviewer 发布说明](../3DGSviewer/q3dviewer/docs/release.md)
 

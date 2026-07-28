@@ -6,6 +6,19 @@ Camera System 是运行在 Jetson 上的统一 Qt 桌面应用，串联多摄像
 八视角任务打包、WSL/服务器端 3DGS 重建和 PLY 结果查看。仓库也保留三个
 能力子项目，便于独立测试和维护。
 
+## 界面概览
+
+界面按采集、重建、查看三个主阶段组织，并把历史、设置和诊断作为工作站支持
+功能。实时采集与 3D 查看使用低眩光深色操作面，配置和任务页面使用浅色
+文档面。
+
+| 采集工作台 | 传输与重建 |
+|---|---|
+| ![等待摄像头的采集工作台](docs/images/ui/capture.png) | ![三阶段传输与重建工作流](docs/images/ui/transfer.png) |
+
+六个页面的完整截图、设计令牌、组件和可访问性约定见
+[UI 设计系统](docs/development/UI_DESIGN_SYSTEM.md)。
+
 ## 支持平台
 
 生产基线是：
@@ -254,6 +267,7 @@ wsl_service_url: http://192.168.1.100:8000
 
 - [Jetson 用户操作说明](docs/user/JETSON_USER_GUIDE.md)
 - [架构与开发约定](docs/development/ARCHITECTURE.md)
+- [UI 设计系统与截图基线](docs/development/UI_DESIGN_SYSTEM.md)
 - [全部文档索引](docs/README.md)
 - [multiwebcam 文档索引](multiwebcam/docs/README.md)
 - [Tx_Rx 当前实现报告](Tx_Rx/markdown/TX纯Python_HTTP客户端实现报告.md)
