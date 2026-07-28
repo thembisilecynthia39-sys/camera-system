@@ -128,7 +128,7 @@ _QSS = Template(
 
     QFrame#emptyState {
         background: $light_surface_subtle;
-        border: 1px dashed $light_border_strong;
+        border: 1px solid $light_border_strong;
         border-radius: $radius_lg;
     }
     QLabel#emptyStateSymbol {
@@ -143,6 +143,16 @@ _QSS = Template(
     }
     QLabel#emptyStateDescription {
         color: $light_text_muted;
+    }
+    QLabel#captureEmptyState {
+        background: $dark_surface;
+        color: $dark_text_muted;
+        border: 1px solid $dark_border;
+        border-radius: $radius_lg;
+        padding: $space_8;
+    }
+    QLabel#captureEmptyState:focus {
+        border: $focus_width solid $dark_focus;
     }
 
     QFrame#metricCard {

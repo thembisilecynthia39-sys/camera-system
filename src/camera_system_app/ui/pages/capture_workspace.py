@@ -3,14 +3,16 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import QStackedWidget, QVBoxLayout, QWidget
+from PySide6.QtGui import QColor, QPalette
+from PySide6.QtWidgets import QLabel, QStackedWidget, QVBoxLayout, QWidget
 
 from camera_system_app.domain import (
     CaptureCompletedEvent,
     CaptureRuntimeState,
     CaptureRuntimeStatus,
 )
-from camera_system_app.ui.widgets import EmptyState, StatusBanner
+from camera_system_app.ui.design_tokens import SEMANTIC_DARK
+from camera_system_app.ui.widgets import StatusBanner
 
 
 class CaptureWorkspacePage(QWidget):
@@ -34,14 +36,30 @@ class CaptureWorkspacePage(QWidget):
 
         self._host = QStackedWidget()
         self._host.setObjectName("captureHost")
-        self._empty_state = EmptyState(
-            "◎",
-            "等待摄像头画面",
-            "采集服务正在发现设备。若长时间没有画面，请检查 USB 连接并查看环境诊断。",
-            "打开环境诊断",
+        self._empty_state = QLabel(
+            "<h2>◎ 等待摄像头画面</h2>"
+            "<p>采集服务正在发现设备。若长时间没有画面，请检查 USB 连接。</p>"
+            "<p><a href=\"diagnostics\">打开环境诊断</a></p>"
         )
-        self._empty_state.action_requested.connect(
-            self.open_diagnostics_requested.emit
+        self._empty_state.setObjectName("captureEmptyState")
+        self._empty_state.setAlignment(Qt.AlignCenter)
+        self._empty_state.setWordWrap(True)
+        self._empty_state.setTextInteractionFlags(
+            Qt.LinksAccessibleByKeyboard | Qt.LinksAccessibleByMouse
+        )
+        self._empty_state.setFocusPolicy(Qt.StrongFocus)
+        self._empty_state.setOpenExternalLinks(False)
+        self._empty_state.setAccessibleName(
+            "等待摄像头画面。打开环境诊断"
+        )
+        palette = self._empty_state.palette()
+        palette.setColor(
+            QPalette.Link,
+            QColor(SEMANTIC_DARK["interactive"]),
+        )
+        self._empty_state.setPalette(palette)
+        self._empty_state.linkActivated.connect(
+            lambda _link: self.open_diagnostics_requested.emit()
         )
         self._placeholder = self._empty_state
         self._host.addWidget(self._placeholder)
