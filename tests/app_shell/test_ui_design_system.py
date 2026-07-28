@@ -4,14 +4,21 @@ from pathlib import Path
 import re
 
 from camera_system_app.bootstrap import build_context
-from camera_system_app.domain import ReconstructionJob
+from camera_system_app.domain import (
+    DiagnosticCheck,
+    DiagnosticReport,
+    DiagnosticStatus,
+    ReconstructionJob,
+)
 from camera_system_app.ui.design_tokens import SEMANTIC_DARK, SEMANTIC_LIGHT
 from camera_system_app.ui.main_window import MainWindow
 from camera_system_app.ui.pages import (
     HistoryPage,
     ResultViewerPage,
+    SettingsPage,
     TransferReconstructionPage,
 )
+from camera_system_app.ui.pages.diagnostics_log import DiagnosticsLogPage
 from camera_system_app.ui.theme import application_stylesheet
 from camera_system_app.ui.widgets import (
     EmptyState,
@@ -184,3 +191,49 @@ def test_history_switches_between_empty_state_and_table(qapp, tmp_path):
 
     assert page.table.isVisibleTo(page)
     assert not page._empty_state.isVisibleTo(page)
+
+
+def test_settings_groups_scroll_without_changing_values(
+    tmp_path, monkeypatch, qapp
+):
+    for name in ("CONFIG", "DATA", "STATE", "CACHE"):
+        monkeypatch.setenv("XDG_{}_HOME".format(name), str(tmp_path / name.lower()))
+    context = build_context(project_root=str(PROJECT_ROOT))
+    page = SettingsPage(context.settings, str(context.paths.config_file))
+
+    assert page._scroll.widgetResizable()
+    assert (
+        page.values()["wsl_service_url"]
+        == context.settings.wsl_service_url
+    )
+    assert page._save_button.isVisibleTo(page)
+
+
+def test_diagnostic_metrics_follow_report(qapp):
+    page = DiagnosticsLogPage("/tmp/camera-system.log")
+    report = DiagnosticReport.from_checks(
+        [
+            DiagnosticCheck(
+                "摄像头",
+                DiagnosticStatus.PASS,
+                "已连接",
+            ),
+            DiagnosticCheck(
+                "WSL",
+                DiagnosticStatus.WARNING,
+                "未检查",
+            ),
+            DiagnosticCheck(
+                "OpenGL",
+                DiagnosticStatus.FAILURE,
+                "不可用",
+            ),
+        ]
+    )
+
+    page.set_report(report)
+
+    assert page._passed_metric.value_text() == "1"
+    assert page._warning_metric.value_text() == "1"
+    assert page._failure_metric.value_text() == "1"
+    assert page._splitter.count() == 2
