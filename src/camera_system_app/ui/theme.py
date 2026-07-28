@@ -1,71 +1,70 @@
-"""Semantic stylesheet shared by the application shell.
+"""Token-driven QSS shared by the Jetson workstation shell."""
 
-The shell deliberately uses a light work surface around a compact navy
-navigation rail.  Camera imagery keeps its own low-glare dark presentation in
-``multiwebcam``; forms, history and diagnostics remain easy to scan in normal
-desktop lighting.
-"""
+from string import Template
+
+from camera_system_app.ui.design_tokens import style_tokens
 
 
-def application_stylesheet() -> str:
-    """Return the unified Jetson workstation theme."""
-
-    return """
+_QSS = Template(
+    """
     QWidget {
-        background: #F3F6FA;
-        color: #172033;
+        background: $light_background;
+        color: $light_text;
         font-family: "Noto Sans CJK SC", "Noto Sans", sans-serif;
-        font-size: 15px;
+        font-size: $font_body;
     }
     QMainWindow, QStackedWidget, QWidget#pageSurface {
-        background: #F3F6FA;
-    }
-    QWidget#capturePageSurface,
-    QWidget#resultPageSurface,
-    QStackedWidget#captureHost {
-        background: #07131D;
-    }
-    QWidget#capturePageSurface QLabel,
-    QWidget#resultPageSurface QLabel {
-        color: #DDE8EF;
-    }
-    QWidget#capturePageSurface QLabel#mutedText,
-    QWidget#resultPageSurface QLabel#mutedText,
-    QWidget#resultPageSurface QLabel#pageDescription {
-        color: #9FB0BC;
-    }
-    QWidget#resultPageSurface QLabel#pageTitle {
-        color: #EEF5F7;
+        background: $light_background;
     }
     QLabel {
         background: transparent;
     }
-    QFrame#sidebar {
-        background: #142238;
-        border: none;
-        border-right: 1px solid #22334B;
-    }
-    QFrame#brandBlock {
-        background: #192B44;
-        border: 1px solid #2B405C;
-        border-radius: 12px;
-    }
-    QLabel#brandTitle {
-        font-size: 20px;
+    QLabel#eyebrow {
+        color: $light_interactive;
+        font-size: $font_caption;
         font-weight: 700;
-        color: #FFFFFF;
-    }
-    QLabel#brandSubtitle {
-        color: #B9C7D9;
-        font-size: 13px;
-    }
-    QLabel#pageDescription, QLabel#mutedText {
-        color: #65738A;
     }
     QLabel#pageTitle {
-        font-size: 26px;
+        color: $light_text;
+        font-size: $font_title;
         font-weight: 700;
-        color: #172033;
+    }
+    QLabel#pageDescription, QLabel#mutedText {
+        color: $light_text_muted;
+    }
+    QLabel#sectionTitle {
+        color: $light_text;
+        font-size: $font_section;
+        font-weight: 700;
+    }
+    QLabel#sectionDescription {
+        color: $light_text_muted;
+        font-size: $font_caption;
+    }
+
+    QFrame#sidebar {
+        background: $dark_surface_raised;
+        border: none;
+        border-right: 1px solid $dark_border;
+    }
+    QFrame#brandBlock {
+        background: $dark_surface_selected;
+        border: 1px solid $dark_border;
+        border-radius: $radius_lg;
+    }
+    QLabel#brandTitle {
+        color: $dark_text;
+        font-size: $font_subtitle;
+        font-weight: 700;
+    }
+    QLabel#brandSubtitle, QLabel#sidebarVersion, QLabel#workstationStatus {
+        color: $dark_text_muted;
+        font-size: $font_caption;
+    }
+    QLabel#navigationSection {
+        color: $dark_text_muted;
+        font-size: $font_caption;
+        font-weight: 700;
     }
     QListWidget#primaryNavigation {
         background: transparent;
@@ -73,45 +72,334 @@ def application_stylesheet() -> str:
         outline: none;
     }
     QListWidget#primaryNavigation::item {
-        min-height: 48px;
-        padding: 0 14px;
-        margin: 3px 0;
-        border-radius: 8px;
-        color: #C6D1E0;
+        min-height: $nav_item_height;
+        padding: 0 $space_4;
+        margin: $space_1 0;
+        border-radius: $radius_md;
+        color: $dark_text_muted;
     }
     QListWidget#primaryNavigation::item:selected {
-        background: #214365;
-        color: #FFFFFF;
-        border-left: 3px solid #35C6B4;
+        background: $dark_surface_selected;
+        color: $dark_text;
+        border-left: 3px solid $dark_interactive;
     }
     QListWidget#primaryNavigation::item:hover:!selected {
-        background: #1A304B;
-        color: #FFFFFF;
+        background: $dark_surface;
+        color: $dark_text;
     }
-    QLabel#sidebarVersion {
-        color: #8FA1B9;
-        font-size: 12px;
+    QListWidget#primaryNavigation::item:focus {
+        border: $focus_width solid $dark_focus;
     }
-    QFrame#contentCard, QFrame#statusBanner {
-        background: #FFFFFF;
-        border: 1px solid #DCE3EC;
-        border-radius: 12px;
+
+    QFrame#contentCard, QFrame#sectionCard, QFrame#historySummary {
+        background: $light_surface;
+        border: 1px solid $light_border;
+        border-radius: $radius_lg;
     }
-    QFrame#statusBanner[status="warning"] {
-        background: #FFF8E8;
-        border-color: #F2D18A;
-        color: #674A0C;
+    QFrame#statusBanner {
+        background: $light_interactive_subtle;
+        border: 1px solid $light_interactive_border;
+        border-radius: $radius_md;
+        color: $light_interactive;
+    }
+    QFrame#statusBanner[status="info"] {
+        background: $light_interactive_subtle;
+        border-color: $light_interactive_border;
+        color: $light_interactive;
     }
     QFrame#statusBanner[status="success"] {
-        background: #EAF8F4;
-        border-color: #9DD8C9;
-        color: #175C50;
+        background: $light_success_background;
+        border-color: $light_operational;
+        color: $light_success;
+    }
+    QFrame#statusBanner[status="warning"] {
+        background: $light_warning_background;
+        border-color: $light_warning;
+        color: $light_warning;
+    }
+    QFrame#statusBanner[status="danger"] {
+        background: $light_danger_background;
+        border-color: $light_danger;
+        color: $light_danger;
+    }
+    QFrame#statusBanner QLabel {
+        color: inherit;
+    }
+
+    QFrame#emptyState {
+        background: $light_surface_subtle;
+        border: 1px dashed $light_border_strong;
+        border-radius: $radius_lg;
+    }
+    QLabel#emptyStateSymbol {
+        color: $light_interactive;
+        font-size: 32px;
+        font-weight: 700;
+    }
+    QLabel#emptyStateTitle {
+        color: $light_text;
+        font-size: $font_subtitle;
+        font-weight: 700;
+    }
+    QLabel#emptyStateDescription {
+        color: $light_text_muted;
+    }
+
+    QFrame#metricCard {
+        background: $light_surface;
+        border: 1px solid $light_border;
+        border-radius: $radius_md;
+    }
+    QFrame#metricCard[status="success"] {
+        border-left: 4px solid $light_success;
+    }
+    QFrame#metricCard[status="warning"] {
+        border-left: 4px solid $light_warning;
+    }
+    QFrame#metricCard[status="danger"] {
+        border-left: 4px solid $light_danger;
+    }
+    QLabel#metricValue {
+        color: $light_text;
+        font-size: $font_subtitle;
+        font-weight: 700;
+    }
+    QLabel#metricLabel {
+        color: $light_text_muted;
+        font-size: $font_caption;
+    }
+
+    QFrame#workflowStage {
+        background: $light_surface;
+        border: 1px solid $light_border;
+        border-radius: $radius_lg;
+    }
+    QFrame#workflowStage[state="active"] {
+        border: 2px solid $light_interactive;
+    }
+    QFrame#workflowStage[state="completed"] {
+        border: 2px solid $light_operational;
+        background: $light_success_background;
+    }
+    QFrame#workflowStage[state="warning"] {
+        border: 2px solid $light_warning;
+        background: $light_warning_background;
+    }
+    QFrame#workflowStage[state="failed"] {
+        border: 2px solid $light_danger;
+        background: $light_danger_background;
+    }
+    QLabel#workflowNumber {
+        color: $light_interactive;
+        font-size: $font_caption;
+        font-weight: 700;
+    }
+    QLabel#workflowTitle {
+        color: $light_text;
+        font-size: $font_section;
+        font-weight: 700;
+    }
+    QLabel#workflowStatus {
+        color: $light_text_muted;
+        font-size: $font_caption;
+    }
+
+    QPushButton {
+        min-height: $button_height;
+        padding: 0 $space_4;
+        background: $light_surface;
+        color: $light_text;
+        border: 1px solid $light_border_strong;
+        border-radius: $radius_md;
+    }
+    QPushButton:hover {
+        background: $light_surface_subtle;
+        border-color: $light_text_muted;
+    }
+    QPushButton:focus, QToolButton:focus {
+        border: $focus_width solid $light_focus;
+    }
+    QPushButton:disabled {
+        color: $light_text_muted;
+        background: $light_surface_subtle;
+        border-color: $light_border;
+    }
+    QPushButton#primaryButton {
+        min-height: $button_primary_height;
+        background: $light_interactive;
+        color: $light_surface;
+        border-color: $light_interactive;
+        font-weight: 700;
+    }
+    QPushButton#primaryButton:hover {
+        background: $light_interactive_hover;
+        border-color: $light_interactive_hover;
+    }
+    QPushButton#secondaryButton {
+        color: $light_interactive;
+        border-color: $light_interactive_border;
+    }
+
+    QLineEdit, QComboBox, QPlainTextEdit, QSpinBox, QDoubleSpinBox {
+        min-height: $button_height;
+        background: $light_surface;
+        color: $light_text;
+        border: 1px solid $light_border_strong;
+        border-radius: $radius_md;
+        padding: $space_1 $space_3;
+        selection-background-color: $light_interactive;
+    }
+    QLineEdit:focus, QComboBox:focus, QPlainTextEdit:focus,
+    QSpinBox:focus, QDoubleSpinBox:focus {
+        border: $focus_width solid $light_focus;
+    }
+    QProgressBar {
+        min-height: 10px;
+        max-height: 10px;
+        background: $light_surface_subtle;
+        border: none;
+        border-radius: 5px;
+        text-align: center;
+        color: transparent;
+    }
+    QProgressBar::chunk {
+        background: $light_operational;
+        border-radius: 5px;
+    }
+    QTableWidget, QTableView {
+        background: $light_surface;
+        alternate-background-color: $light_surface_subtle;
+        color: $light_text;
+        border: 1px solid $light_border;
+        border-radius: $radius_md;
+        gridline-color: transparent;
+        selection-background-color: $light_interactive_subtle;
+        selection-color: $light_text;
+        outline: none;
+    }
+    QTableWidget::item, QTableView::item {
+        padding: $space_2 $space_3;
+        border-bottom: 1px solid $light_border;
+    }
+    QHeaderView::section {
+        background: $light_surface_subtle;
+        color: $light_text_muted;
+        border: none;
+        border-bottom: 1px solid $light_border;
+        padding: $space_3;
+        font-size: $font_caption;
+        font-weight: 700;
+    }
+    QScrollArea, QScrollArea > QWidget > QWidget {
+        background: transparent;
+        border: none;
+    }
+    QSplitter::handle {
+        background: $light_border;
+        height: 4px;
+    }
+
+    QLabel#historyCount {
+        color: $light_text;
+        font-weight: 700;
+    }
+    QLabel#historyHint {
+        color: $light_text_muted;
+        font-size: $font_caption;
+    }
+    QWidget#historyActions {
+        background: transparent;
+    }
+    QPushButton#tablePrimaryAction {
+        min-height: 32px;
+        max-height: 32px;
+        padding: 0 $space_3;
+        background: $light_interactive_subtle;
+        color: $light_interactive;
+        border: 1px solid $light_interactive_border;
+        font-size: $font_caption;
+        font-weight: 700;
+    }
+    QToolButton#tableMoreAction {
+        min-width: 34px;
+        max-width: 34px;
+        min-height: 32px;
+        max-height: 32px;
+        background: $light_surface;
+        color: $light_text_muted;
+        border: 1px solid $light_border_strong;
+        border-radius: $radius_sm;
+        font-weight: 700;
+    }
+    QMenu {
+        background: $light_surface;
+        color: $light_text;
+        border: 1px solid $light_border_strong;
+        padding: $space_1;
+    }
+    QMenu::item {
+        min-height: 30px;
+        padding: $space_1 $space_5 $space_1 $space_3;
+        border-radius: $radius_sm;
+    }
+    QMenu::item:selected {
+        background: $light_interactive_subtle;
+        color: $light_interactive;
+    }
+    QLabel#taskStateBadge {
+        border-radius: $radius_md;
+        padding: $space_1 $space_2;
+        font-size: $font_caption;
+        font-weight: 700;
+    }
+    QLabel#taskStateBadge[state="success"] {
+        background: $light_success_background;
+        color: $light_success;
+        border: 1px solid $light_operational;
+    }
+    QLabel#taskStateBadge[state="danger"] {
+        background: $light_danger_background;
+        color: $light_danger;
+        border: 1px solid $light_danger;
+    }
+    QLabel#taskStateBadge[state="active"] {
+        background: $light_interactive_subtle;
+        color: $light_interactive;
+        border: 1px solid $light_interactive_border;
+    }
+    QLabel#taskStateBadge[state="warning"] {
+        background: $light_warning_background;
+        color: $light_warning;
+        border: 1px solid $light_warning;
+    }
+    QLabel#taskStateBadge[state="neutral"] {
+        background: $light_surface_subtle;
+        color: $light_text_muted;
+        border: 1px solid $light_border;
+    }
+
+    QWidget#capturePageSurface,
+    QWidget#resultPageSurface,
+    QStackedWidget#captureHost {
+        background: $dark_background;
+    }
+    QWidget#capturePageSurface QLabel,
+    QWidget#resultPageSurface QLabel {
+        color: $dark_text;
+    }
+    QWidget#capturePageSurface QLabel#mutedText,
+    QWidget#resultPageSurface QLabel#mutedText,
+    QWidget#resultPageSurface QLabel#pageDescription {
+        color: $dark_text_muted;
+    }
+    QWidget#resultPageSurface QLabel#pageTitle {
+        color: $dark_text;
     }
     QWidget#capturePageSurface QFrame#statusBanner,
     QWidget#resultPageSurface QFrame#statusBanner {
-        background: #0A1B27;
-        border-color: #27404F;
-        color: #C8D8E1;
+        background: $dark_surface;
+        border-color: $dark_border;
+        color: $dark_text_muted;
     }
     QWidget#capturePageSurface QFrame#statusBanner {
         border-left: none;
@@ -121,210 +409,81 @@ def application_stylesheet() -> str:
     }
     QWidget#capturePageSurface QFrame#statusBanner[status="warning"],
     QWidget#resultPageSurface QFrame#statusBanner[status="warning"] {
-        background: #2C2418;
-        border-color: #72582D;
-        color: #F4C96A;
+        background: $dark_warning_background;
+        border-color: $dark_warning;
+        color: $dark_warning;
     }
     QWidget#capturePageSurface QFrame#statusBanner[status="success"],
     QWidget#resultPageSurface QFrame#statusBanner[status="success"] {
-        background: #0C2A28;
-        border-color: #23665E;
-        color: #7AECDD;
+        background: $dark_success_background;
+        border-color: $dark_interactive;
+        color: $dark_success;
     }
-    QWidget#resultPageSurface QFrame#contentCard {
-        background: #0A1823;
-        border-color: #203541;
+    QWidget#capturePageSurface QFrame#statusBanner[status="danger"],
+    QWidget#resultPageSurface QFrame#statusBanner[status="danger"] {
+        background: $dark_danger_background;
+        border-color: $dark_danger;
+        color: $dark_danger;
+    }
+    QWidget#capturePageSurface QFrame#emptyState,
+    QWidget#resultPageSurface QFrame#emptyState {
+        background: $dark_surface;
+        border-color: $dark_border;
+    }
+    QWidget#capturePageSurface QLabel#emptyStateSymbol,
+    QWidget#resultPageSurface QLabel#emptyStateSymbol {
+        color: $dark_interactive;
+    }
+    QWidget#capturePageSurface QLabel#emptyStateTitle,
+    QWidget#resultPageSurface QLabel#emptyStateTitle {
+        color: $dark_text;
+    }
+    QWidget#capturePageSurface QLabel#emptyStateDescription,
+    QWidget#resultPageSurface QLabel#emptyStateDescription {
+        color: $dark_text_muted;
+    }
+    QWidget#resultPageSurface QFrame#contentCard,
+    QWidget#resultPageSurface QFrame#sectionCard {
+        background: $dark_surface;
+        border-color: $dark_border;
     }
     QWidget#resultPageSurface QPushButton {
-        background: #12313A;
-        color: #E3EDF2;
-        border-color: #35505D;
+        background: $dark_surface_raised;
+        color: $dark_text;
+        border-color: $dark_border;
     }
     QWidget#resultPageSurface QPushButton:hover {
-        background: #183F49;
-        border-color: #527887;
+        background: $dark_surface_selected;
     }
     QWidget#resultPageSurface QPushButton:disabled {
-        color: #6F8491;
-        background: #0A161F;
-        border-color: #1B303B;
+        color: $dark_text_muted;
+        background: $dark_surface;
+        border-color: $dark_border;
     }
     QWidget#resultPageSurface QPushButton#primaryButton {
-        background: #22D7C0;
-        color: #07131D;
-        border-color: #22D7C0;
+        background: $dark_interactive;
+        color: $dark_background;
+        border-color: $dark_interactive;
     }
     QWidget#resultPageSurface QPushButton#primaryButton:hover {
-        background: #43E4CF;
+        background: $dark_interactive_hover;
     }
-    QLabel#sectionTitle {
-        font-size: 18px;
-        font-weight: 700;
-    }
-    QPushButton {
-        min-height: 40px;
-        padding: 0 16px;
-        background: #FFFFFF;
-        color: #253047;
-        border: 1px solid #C9D3E0;
-        border-radius: 8px;
-    }
-    QPushButton:hover {
-        background: #F5F8FC;
-        border-color: #8394AA;
-    }
-    QPushButton:focus {
-        border: 2px solid #2878D0;
-    }
-    QPushButton:disabled {
-        color: #98A4B5;
-        background: #EEF2F6;
-        border-color: #DCE3EC;
-    }
-    QPushButton#primaryButton {
-        background: #1769B0;
-        color: #FFFFFF;
-        border-color: #1769B0;
-        font-weight: 700;
-    }
-    QPushButton#primaryButton:hover {
-        background: #115A99;
-    }
-    QLineEdit, QComboBox, QPlainTextEdit {
-        min-height: 42px;
-        background: #FFFFFF;
-        color: #172033;
-        border: 1px solid #C9D3E0;
-        border-radius: 8px;
-        padding: 4px 9px;
-        selection-background-color: #2878D0;
-    }
-    QLineEdit:focus, QComboBox:focus, QPlainTextEdit:focus {
-        border: 2px solid #2878D0;
-    }
-    QTableWidget {
-        background: #FFFFFF;
-        alternate-background-color: #F8FAFD;
-        color: #253047;
-        border: 1px solid #DCE3EC;
-        border-radius: 10px;
-        gridline-color: transparent;
-        selection-background-color: #E4F0FC;
-        selection-color: #172033;
-        outline: none;
-    }
-    QTableWidget::item {
-        padding: 8px 10px;
-        border-bottom: 1px solid #E8EDF3;
-    }
-    QHeaderView::section {
-        background: #EEF3F8;
-        color: #46556C;
-        border: none;
-        border-bottom: 1px solid #D3DCE7;
-        padding: 10px;
-        font-size: 13px;
-        font-weight: 700;
-    }
-    QFrame#historySummary {
-        background: #FFFFFF;
-        border: 1px solid #DCE3EC;
-        border-radius: 10px;
-    }
-    QLabel#historyCount {
-        color: #26344B;
-        font-weight: 700;
-    }
-    QLabel#historyHint {
-        color: #718096;
-        font-size: 13px;
-    }
-    QWidget#historyActions {
-        background: transparent;
-    }
-    QPushButton#tablePrimaryAction {
-        min-height: 32px;
-        max-height: 32px;
-        padding: 0 12px;
-        background: #E8F2FC;
-        color: #155F9F;
-        border: 1px solid #BBD6EE;
-        font-size: 13px;
-        font-weight: 700;
-    }
-    QPushButton#tablePrimaryAction:hover {
-        background: #DCECFB;
-        border-color: #82B5DF;
-    }
-    QToolButton#tableMoreAction {
-        min-width: 34px;
-        max-width: 34px;
-        min-height: 32px;
-        max-height: 32px;
-        padding: 0;
-        background: #FFFFFF;
-        color: #526178;
-        border: 1px solid #C9D3E0;
-        border-radius: 7px;
-        font-weight: 700;
-    }
-    QToolButton#tableMoreAction:hover {
-        background: #F2F6FA;
-    }
-    QMenu {
-        background: #FFFFFF;
-        color: #253047;
-        border: 1px solid #C9D3E0;
-        padding: 5px;
-    }
-    QMenu::item {
-        min-height: 30px;
-        padding: 4px 22px 4px 12px;
-        border-radius: 5px;
-    }
-    QMenu::item:selected {
-        background: #E8F2FC;
-        color: #155F9F;
-    }
-    QLabel#taskStateBadge {
-        border-radius: 10px;
-        padding: 4px 9px;
-        font-size: 12px;
-        font-weight: 700;
-    }
-    QLabel#taskStateBadge[state="success"] {
-        background: #E3F6EF;
-        color: #176A56;
-        border: 1px solid #A8DDCF;
-    }
-    QLabel#taskStateBadge[state="danger"] {
-        background: #FDECEC;
-        color: #A83939;
-        border: 1px solid #F1B9B9;
-    }
-    QLabel#taskStateBadge[state="active"] {
-        background: #E7F1FC;
-        color: #1764A5;
-        border: 1px solid #B7D4EE;
-    }
-    QLabel#taskStateBadge[state="warning"] {
-        background: #FFF4D9;
-        color: #805B0B;
-        border: 1px solid #EFD18D;
-    }
-    QLabel#taskStateBadge[state="neutral"] {
-        background: #EEF2F6;
-        color: #58667A;
-        border: 1px solid #D3DCE7;
-    }
+
     QStatusBar {
-        background: #FFFFFF;
-        color: #56657A;
-        border-top: 1px solid #DCE3EC;
+        background: $light_surface;
+        color: $light_text_muted;
+        border-top: 1px solid $light_border;
     }
     QStatusBar[mode="operational"] {
-        background: #0A1823;
-        color: #A9B8C2;
-        border-top: 1px solid #203541;
+        background: $dark_surface;
+        color: $dark_text_muted;
+        border-top: 1px solid $dark_border;
     }
     """
+)
+
+
+def application_stylesheet() -> str:
+    """Return the resolved workstation stylesheet."""
+
+    return _QSS.substitute(style_tokens())
