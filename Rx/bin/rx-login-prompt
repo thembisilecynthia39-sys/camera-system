@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+
+case "$-" in
+    *i*) ;;
+    *) return 0 2>/dev/null || exit 0 ;;
+esac
+
+BOOT_ID="$(cat /proc/sys/kernel/random/boot_id 2>/dev/null)" || exit 0
+MARKER="/tmp/gaussianobject-rx-prompt-${USER}-${BOOT_ID}"
+if [[ -e "$MARKER" ]]; then
+    return 0 2>/dev/null || exit 0
+fi
+touch "$MARKER" 2>/dev/null || true
+
+if systemctl is-active --quiet gaussianobject-rx.service; then
+    printf '\nGaussianObject Rx 当前已开启。是否保持开启？[Y/n] '
+    read -r answer
+    case "$answer" in
+        n|N|no|NO|No)
+            echo "正在关闭 Rx；以后需要时运行: Rx on"
+            Rx off
+            ;;
+        *)
+            echo "Rx 保持开启。查看状态: Rx status"
+            ;;
+    esac
+else
+    printf '\nGaussianObject Rx 当前未开启。现在开启吗？[y/N] '
+    read -r answer
+    case "$answer" in
+        y|Y|yes|YES|Yes)
+            Rx on
+            ;;
+        *)
+            echo "Rx 保持关闭。需要时运行: Rx on"
+            ;;
+    esac
+fi
