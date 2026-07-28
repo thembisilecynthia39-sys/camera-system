@@ -35,12 +35,12 @@ class MainWindow(QMainWindow):
 
     close_requested = Signal(object)
     NAVIGATION_LABELS = (
-        "采集工作台",
-        "传输与重建",
-        "结果查看",
-        "历史任务",
-        "设置",
-        "日志和环境诊断",
+        "01  采集工作台",
+        "02  传输与重建",
+        "03  结果查看",
+        "04  历史任务",
+        "05  设置",
+        "06  日志和环境诊断",
     )
 
     def __init__(self, paths: AppPaths, settings: AppSettings, parent=None) -> None:
@@ -75,6 +75,10 @@ class MainWindow(QMainWindow):
         brand_layout.addWidget(subtitle)
         sidebar_layout.addWidget(brand_block)
 
+        navigation_section = QLabel("主流程 · 采集 → 重建 → 查看")
+        navigation_section.setObjectName("navigationSection")
+        sidebar_layout.addWidget(navigation_section)
+
         self.navigation = QListWidget()
         self.navigation.setObjectName("primaryNavigation")
         self.navigation.setAccessibleName("主功能导航")
@@ -83,6 +87,14 @@ class MainWindow(QMainWindow):
             item.setSizeHint(QSize(194, 50))
             self.navigation.addItem(item)
         sidebar_layout.addWidget(self.navigation, 1)
+
+        workstation_status = QLabel("● 本机工作站\n摄像头与服务按需连接")
+        workstation_status.setObjectName("workstationStatus")
+        workstation_status.setWordWrap(True)
+        workstation_status.setAccessibleName(
+            "本机工作站，摄像头与服务按需连接"
+        )
+        sidebar_layout.addWidget(workstation_status)
 
         version = QLabel("版本 " + __version__)
         version.setObjectName("sidebarVersion")
@@ -107,6 +119,9 @@ class MainWindow(QMainWindow):
             self.settings_page,
             self.diagnostics_page,
         ]
+        self.capture_page.open_diagnostics_requested.connect(
+            lambda: self.navigation.setCurrentRow(5)
+        )
         for page in self.pages:
             self.stack.addWidget(page)
 

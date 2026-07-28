@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (
 )
 
 from camera_system_app.ui.pages.base import BasePage
-from camera_system_app.ui.widgets import StatusBanner
+from camera_system_app.ui.widgets import EmptyState, StatusBanner
 
 
 class ResultViewerPage(BasePage):
@@ -25,6 +25,7 @@ class ResultViewerPage(BasePage):
             "结果查看",
             "使用现有 q3dviewer 查看 Jetson 本地 Gaussian Splat PLY。",
             parent,
+            eyebrow="工作流 03 · 查看与检查",
         )
         self.setObjectName("resultPageSurface")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
@@ -34,7 +35,10 @@ class ResultViewerPage(BasePage):
         self._banner = StatusBanner("当前没有已完成的本地重建结果。")
         self.layout.addWidget(self._banner)
 
-        card = self.add_card()
+        card = self.add_card(
+            "结果工具栏",
+            "选择本地 PLY，加载后可重置视角或重新载入。",
+        )
         self._result = QLabel("结果目录：" + result_root)
         self._result.setWordWrap(True)
         viewer = QLabel("q3dviewer 源码：" + viewer_root)
@@ -42,6 +46,7 @@ class ResultViewerPage(BasePage):
         viewer.setWordWrap(True)
         controls = QHBoxLayout()
         self._select = QPushButton("选择本地 PLY")
+        self._select.setAccessibleName("选择本地 Gaussian PLY")
         self._select.clicked.connect(self.select_local_result_requested.emit)
         self._action = QPushButton("加载当前 PLY")
         self._action.setObjectName("primaryButton")
@@ -68,9 +73,16 @@ class ResultViewerPage(BasePage):
         self._viewer_frame.setObjectName("contentCard")
         self._viewer_layout = QVBoxLayout(self._viewer_frame)
         self._viewer_layout.setContentsMargins(2, 2, 2, 2)
-        self._empty = QLabel("重建完成后，可在此处打开本地 3DGS.ply。")
-        self._empty.setObjectName("mutedText")
-        self._empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._empty_state = EmptyState(
+            "◇",
+            "尚未加载 Gaussian 结果",
+            "重建完成后可直接打开结果，也可以选择 Jetson 本地 PLY。",
+            "选择本地 PLY",
+        )
+        self._empty_state.action_requested.connect(
+            self.select_local_result_requested.emit
+        )
+        self._empty = self._empty_state
         self._viewer_layout.addWidget(self._empty, 1)
         self.layout.addWidget(self._viewer_frame, 1)
 

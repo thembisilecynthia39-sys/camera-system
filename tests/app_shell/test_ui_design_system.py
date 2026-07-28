@@ -1,8 +1,12 @@
 """Behaviour checks for the workstation UI design system."""
 
+from pathlib import Path
 import re
 
+from camera_system_app.bootstrap import build_context
 from camera_system_app.ui.design_tokens import SEMANTIC_DARK, SEMANTIC_LIGHT
+from camera_system_app.ui.main_window import MainWindow
+from camera_system_app.ui.pages import ResultViewerPage
 from camera_system_app.ui.theme import application_stylesheet
 from camera_system_app.ui.widgets import (
     EmptyState,
@@ -11,6 +15,8 @@ from camera_system_app.ui.widgets import (
     StatusBanner,
     WorkflowStage,
 )
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _relative_luminance(hex_color):
@@ -108,3 +114,41 @@ def test_page_header_exposes_workflow_eyebrow(qapp):
     header = PageHeader("传输与重建", "后台执行", "工作流 02")
 
     assert header.eyebrow_text() == "工作流 02"
+
+
+def test_numbered_navigation_preserves_page_indexes(
+    tmp_path, monkeypatch, qapp
+):
+    for name in ("CONFIG", "DATA", "STATE", "CACHE"):
+        monkeypatch.setenv("XDG_{}_HOME".format(name), str(tmp_path / name.lower()))
+    context = build_context(project_root=str(PROJECT_ROOT))
+    window = MainWindow(context.paths, context.settings)
+
+    assert window.navigation.count() == 6
+    assert window.navigation.item(0).text().startswith("01")
+    assert window.navigation.item(5).text().startswith("06")
+
+    window.navigation.setCurrentRow(2)
+
+    assert window.stack.currentWidget() is window.result_page
+
+
+def test_capture_empty_state_opens_diagnostics(
+    tmp_path, monkeypatch, qapp
+):
+    for name in ("CONFIG", "DATA", "STATE", "CACHE"):
+        monkeypatch.setenv("XDG_{}_HOME".format(name), str(tmp_path / name.lower()))
+    context = build_context(project_root=str(PROJECT_ROOT))
+    window = MainWindow(context.paths, context.settings)
+
+    window.capture_page._empty_state.action_button.click()
+
+    assert window.navigation.currentRow() == 5
+
+
+def test_result_viewer_has_actionable_empty_state(qapp, tmp_path):
+    page = ResultViewerPage(str(tmp_path / "results"), str(tmp_path / "viewer"))
+
+    assert page._empty_state.isVisibleTo(page)
+    assert "Gaussian" in page._empty_state.title_text()
+    assert page._empty_state.action_button.text() == "选择本地 PLY"
