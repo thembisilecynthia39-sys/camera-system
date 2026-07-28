@@ -1,0 +1,29 @@
+[Unit]
+Description=GaussianObject WSL reconstruction receiver
+After=network.target
+StartLimitIntervalSec=300
+StartLimitBurst=3
+
+[Service]
+Type=simple
+User=yp
+WorkingDirectory=/home/yp/GaussianObject/camera_system/Rx
+Environment=PYTHONPATH=.
+ExecStart=/home/yp/miniconda3/envs/GaussianObject/bin/python -m gaussianobject_rx.server --config config.yaml
+Restart=on-failure
+RestartSec=5
+Nice=10
+CPUWeight=50
+IOWeight=50
+MemoryHigh=70%
+MemoryMax=80%
+TasksMax=512
+LimitNOFILE=65536
+OOMPolicy=stop
+OOMScoreAdjust=500
+KillMode=control-group
+TimeoutStopSec=30
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

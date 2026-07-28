@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gaussianobject-rx"
+version = "0.1.0"
+description = "WSL-side GaussianObject receiver and reconstruction service"
+requires-python = ">=3.8"
+dependencies = [
+    "pydantic>=2.0,<3",
+    "PyYAML>=6.0,<7",
+]
+
+[project.scripts]
+gaussianobject-rx = "gaussianobject_rx.server.__main__:main"
+
+[project.optional-dependencies]
+test = [
+    "pytest>=7",
+    "requests>=2.22,<3",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["gaussianobject_rx*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

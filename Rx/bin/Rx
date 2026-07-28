@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SERVICE=gaussianobject-rx.service
+
+usage() {
+    echo "Usage: Rx on|off|status|logs"
+}
+
+case "${1:-}" in
+    on)
+        sudo systemctl enable --now "$SERVICE"
+        systemctl --no-pager --full status "$SERVICE"
+        ;;
+    off)
+        sudo systemctl disable --now "$SERVICE"
+        ;;
+    status)
+        systemctl --no-pager --full status "$SERVICE"
+        ;;
+    logs)
+        journalctl -u "$SERVICE" -f
+        ;;
+    *)
+        usage
+        exit 2
+        ;;
+esac
