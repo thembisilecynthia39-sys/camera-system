@@ -14,7 +14,7 @@ from typing import Iterable
 import cv2
 import numpy as np
 
-if not hasattr(np, "bool"):
+if "bool" not in np.__dict__:
     np.bool = np.bool_
 
 

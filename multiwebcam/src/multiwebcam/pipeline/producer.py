@@ -115,7 +115,7 @@ class FrameProducer:
         self._thread.start()
         logger.info(f"Started producer for {self.device_path}")
 
-    def stop(self, timeout: float = 5.0) -> None:
+    def stop(self, timeout: float = 5.0) -> bool:
         """
         Stop the producer thread.
 
@@ -126,13 +126,21 @@ class FrameProducer:
         Args:
             timeout: Maximum time to wait for thread to join (seconds)
         """
+        self.request_stop()
+        return self.wait_stopped(timeout)
+
+    def request_stop(self) -> None:
+        """Signal capture shutdown without waiting for the reader thread."""
         if not self._running:
             return
-
         logger.info(f"Stopping producer for {self.device_path}")
         self._shutdown_event.set()
         self._resume_event.set()  # Unblock if paused
 
+    def wait_stopped(self, timeout: float = 5.0) -> bool:
+        """Wait for a previously requested stop and source release."""
+        if not self._running:
+            return True
         if self._thread is not None:
             self._thread.join(timeout=timeout)
             if self._thread.is_alive():
@@ -140,9 +148,11 @@ class FrameProducer:
                     f"Producer thread for {self.device_path} "
                     f"did not terminate within {timeout}s"
                 )
+                return False
 
         self._running = False
         logger.info(f"Stopped producer for {self.device_path}")
+        return True
 
     def _run(self) -> None:
         """Producer thread main loop."""

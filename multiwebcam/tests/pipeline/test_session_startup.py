@@ -49,3 +49,35 @@ def test_capture_session_can_start_without_any_camera_for_ui_retry():
         assert not session.producers_healthy
     finally:
         session.stop()
+
+
+def test_capture_session_signals_all_producers_before_waiting():
+    events = []
+
+    class _FakeProducer:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+        def request_stop(self) -> None:
+            events.append(("request", self.name))
+
+        def wait_stopped(self, timeout: float) -> bool:
+            assert events[:2] == [("request", "a"), ("request", "b")]
+            events.append(("wait", self.name))
+            return True
+
+    session = CaptureSession([_FakeSource("/dev/video0")], enable_monitoring=False)
+    session._running = True
+    session._producers = {
+        "a": _FakeProducer("a"),
+        "b": _FakeProducer("b"),
+    }
+    session._stop_alignment_monitor = lambda timeout: True
+
+    assert session.stop()
+    assert events == [
+        ("request", "a"),
+        ("request", "b"),
+        ("wait", "a"),
+        ("wait", "b"),
+    ]

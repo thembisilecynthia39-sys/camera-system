@@ -410,6 +410,9 @@ def _load_binary_little_endian_ply(path):
     in_vertex = False
 
     with open(path, 'rb') as f:
+        if f.readline().strip() != b'ply':
+            raise ValueError("Invalid PLY file: missing ply magic")
+        format_seen = False
         while True:
             raw = f.readline()
             if not raw:
@@ -420,6 +423,7 @@ def _load_binary_little_endian_ply(path):
             if line.startswith('format '):
                 if line != 'format binary_little_endian 1.0':
                     raise ValueError(f"Unsupported PLY format: {line}")
+                format_seen = True
             elif line.startswith('element '):
                 parts = line.split()
                 in_vertex = parts[1] == 'vertex'
@@ -433,8 +437,15 @@ def _load_binary_little_endian_ply(path):
 
         if vertex_count is None:
             raise ValueError("Invalid PLY file: missing vertex element")
+        if not format_seen:
+            raise ValueError("Invalid PLY file: missing format declaration")
         dtype = np.dtype(properties)
-        return np.fromfile(f, dtype=dtype, count=vertex_count)
+        data = np.fromfile(f, dtype=dtype, count=vertex_count)
+        if len(data) != vertex_count:
+            raise ValueError(
+                f"Truncated PLY file: expected {vertex_count} vertices, got {len(data)}"
+            )
+        return data
 
 
 def _make_gs_from_arrays(points, data):
@@ -489,6 +500,8 @@ def load_gs_ply(path, T=None):
         points = np.vstack((data['x'], data['y'], data['z'])).T
         return _make_gs_from_arrays(points, data)
     except Exception as e:
+        if str(e).startswith(("Truncated PLY", "Invalid PLY")):
+            raise
         print(f"[load_gs_ply] Fast loader fallback to meshio: {e}")
 
     import meshio

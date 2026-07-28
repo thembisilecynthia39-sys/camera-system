@@ -4,7 +4,6 @@ Distributed under MIT license. See LICENSE for more information.
 """
 
 from OpenGL.GL import *
-from OpenGL.error import GLError
 from math import radians, tan
 import numpy as np
 from q3dviewer.Qt import QtCore, QtGui
@@ -13,6 +12,10 @@ from q3dviewer.Qt.QtWidgets import QOpenGLWidget
 
 
 class BaseGLWidget(QOpenGLWidget):
+    initialization_failed = QtCore.Signal(str)
+    interaction_started = QtCore.Signal()
+    interaction_finished = QtCore.Signal()
+
     def __init__(self, parent=None):
         QOpenGLWidget.__init__(self, parent)
         self.setFocusPolicy(QtCore.Qt.FocusPolicy.ClickFocus)
@@ -30,7 +33,16 @@ class BaseGLWidget(QOpenGLWidget):
         self.need_recalc_view = True
         self.view_matrix = self.get_view_matrix()
         self.projection_matrix = self.get_projection_matrix()
-        self._fixed_pipeline_available = True
+        self._projection_dirty = True
+        self._compatibility_pipeline = False
+        self._cleanup_done = False
+        self._context_cleanup_connected = False
+        self._interacting = False
+        self._mouse_interacting = False
+        self._interaction_timer = QtCore.QTimer(self)
+        self._interaction_timer.setSingleShot(True)
+        self._interaction_timer.setInterval(180)
+        self._interaction_timer.timeout.connect(self._finish_interaction)
 
         # Pre-calculate candidate offsets for depth picking, sorted by distance
         radius = 3
@@ -57,9 +69,12 @@ class BaseGLWidget(QOpenGLWidget):
                 ev.key() == QtCore.Qt.Key_S:
             self.active_keys.add(ev.key())
         self.active_keys.add(ev.key())
+        self._begin_interaction()
 
     def keyReleaseEvent(self, ev: QtGui.QKeyEvent):
         self.active_keys.discard(ev.key())
+        if not self.active_keys:
+            self._schedule_interaction_finish()
 
     def current_width(self):
         """
@@ -103,42 +118,71 @@ class BaseGLWidget(QOpenGLWidget):
         the method is herted from QOpenGLWidget, 
         and it is called when the widget is first shown.
         """
-        glEnable(GL_DEPTH_TEST)
-        glDepthFunc(GL_LESS)
-
-        for item in self.items:
-            item.initialize()
-        # initialize the projection matrix and model view matrix
-        self.projection_matrix = self.get_projection_matrix()
-        self.update_model_projection()
-        self.view_matrix = self.get_view_matrix()
-        self.update_model_view()
+        try:
+            context = self.context()
+            surface_format = context.format()
+            self._compatibility_pipeline = (
+                surface_format.profile() == surface_format.CompatibilityProfile
+            )
+            if not self._context_cleanup_connected:
+                context.aboutToBeDestroyed.connect(self.cleanup_gl)
+                self._context_cleanup_connected = True
+            glEnable(GL_DEPTH_TEST)
+            glDepthFunc(GL_LESS)
+            for item in self.items:
+                item.initialize()
+            self.projection_matrix = self.get_projection_matrix()
+            self._projection_dirty = False
+            self.view_matrix = self.get_view_matrix()
+            self.update_model_projection()
+            self.update_model_view()
+            self._cleanup_done = False
+        except Exception as exc:
+            self.initialization_failed.emit(str(exc))
+            raise
 
     def set_view_matrix(self, view_matrix):
         self.view_matrix = view_matrix
         self.need_recalc_view = False
 
     def mouseReleaseEvent(self, ev):
+        self._mouse_interacting = False
         if hasattr(self, 'mousePos'):
             delattr(self, 'mousePos')
+        self._schedule_interaction_finish()
+        super().mouseReleaseEvent(ev)
+
+    def mousePressEvent(self, ev):
+        self._mouse_interacting = ev.button() in (
+            QtCore.Qt.MouseButton.LeftButton,
+            QtCore.Qt.MouseButton.RightButton,
+        )
+        self.mousePos = ev.localPos()
+        super().mousePressEvent(ev)
 
     def set_dist(self, dist):
         self.dist = dist
         self.need_recalc_view = True
+        self._projection_dirty = True
+        self.update()
 
     def update_dist(self, delta):
         self.dist += delta
         if self.dist < 0.1:
             self.dist = 0.1
         self.need_recalc_view = True
+        self._projection_dirty = True
+        self.update()
 
     def wheelEvent(self, ev):
+        self._begin_interaction()
         delta = ev.angleDelta().x()
         if delta == 0:
             delta = ev.angleDelta().y()
         self.update_dist(-delta * self.dist * 0.001)
         self.need_recalc_view = True
         self.show_center = True
+        self._schedule_interaction_finish()
 
     def rotate_keep_cam_pos(self, rx=0, ry=0, rz=0):
         """
@@ -156,6 +200,7 @@ class BaseGLWidget(QOpenGLWidget):
         self.center = twc - Rwc_new @ tco
         self.euler = new_euler
         self.need_recalc_view = True
+        self.update()
 
     def mouseMoveEvent(self, ev):
         lpos = ev.localPos()
@@ -163,7 +208,19 @@ class BaseGLWidget(QOpenGLWidget):
             self.mousePos = lpos
         diff = lpos - self.mousePos
         self.mousePos = lpos
-        if ev.buttons() == QtCore.Qt.MouseButton.RightButton:
+        buttons = ev.buttons()
+        if buttons not in (
+            QtCore.Qt.MouseButton.LeftButton,
+            QtCore.Qt.MouseButton.RightButton,
+        ):
+            return
+        if diff.x() == 0 and diff.y() == 0:
+            return
+        # A press/release is only a click. Enter the reduced-cost interaction
+        # path after the camera has actually moved, otherwise a harmless click
+        # requests another full-model render and depth sort.
+        self._begin_interaction()
+        if buttons == QtCore.Qt.MouseButton.RightButton:
             rot_speed = 0.2
             dyaw = radians(-diff.x() * rot_speed)
             droll = radians(-diff.y() * rot_speed)
@@ -171,7 +228,7 @@ class BaseGLWidget(QOpenGLWidget):
                 self.rotate_keep_cam_pos(droll, 0, dyaw)
             else:
                 self.rotate(droll, 0, dyaw)
-        elif ev.buttons() == QtCore.Qt.MouseButton.LeftButton:
+        elif buttons == QtCore.Qt.MouseButton.LeftButton:
             Rwc = euler_to_matrix(self.euler)
             Kinv = np.linalg.inv(self.get_K())
             dist = max(self.dist, 0.5)
@@ -179,11 +236,35 @@ class BaseGLWidget(QOpenGLWidget):
                 Rwc @ Kinv @ np.array([-diff.x(), diff.y(), 0]) * dist)
         self.show_center = True
 
+    def _begin_interaction(self):
+        self._interaction_timer.stop()
+        if not self._interacting:
+            self._interacting = True
+            self.interaction_started.emit()
+
+    def _schedule_interaction_finish(self):
+        self._interaction_timer.start()
+
+    def _finish_interaction(self):
+        if self._mouse_interacting or self.active_keys:
+            return
+        if self._interacting:
+            self._interacting = False
+            self.interaction_finished.emit()
+
     def set_center(self, center):
         self.center = center
         self.need_recalc_view = True
+        self.update()
 
     def paintGL(self):
+        if self._projection_dirty:
+            self.projection_matrix = self.get_projection_matrix()
+            self.update_model_projection()
+            for item in self.items:
+                if item.is_initialized():
+                    item.resize_gl(self.current_width(), self.current_height())
+            self._projection_dirty = False
         # if the camera is moved, update the model view matrix.
         if self.need_recalc_view:
             self.view_matrix = self.get_view_matrix()
@@ -203,25 +284,21 @@ class BaseGLWidget(QOpenGLWidget):
                 after the widget is shown, so we need to initialize it here.
                 """
                 item.initialize()
-            if self._fixed_pipeline_available:
+            if self._compatibility_pipeline:
+                glMatrixMode(GL_MODELVIEW)
+                glPushMatrix()
+                glPushAttrib(GL_ALL_ATTRIB_BITS)
                 try:
-                    glMatrixMode(GL_MODELVIEW)
-                    glPushMatrix()
-                    glPushAttrib(GL_ALL_ATTRIB_BITS)
-                    try:
-                        item.paint()
-                    finally:
-                        glPopAttrib()
-                        glMatrixMode(GL_MODELVIEW)
-                        glPopMatrix()
-                except GLError:
-                    self._fixed_pipeline_available = False
                     item.paint()
+                finally:
+                    glPopAttrib()
+                    glMatrixMode(GL_MODELVIEW)
+                    glPopMatrix()
             else:
                 item.paint()
 
         # Show center as a point if updated by mouse move event
-        if self._fixed_pipeline_available and self.enable_show_center and self.show_center:
+        if self._compatibility_pipeline and self.enable_show_center and self.show_center:
             point_size = np.clip((self.get_K()[0, 0] / self.dist), 10, 100)
             glPointSize(point_size)
             glBegin(GL_POINTS)
@@ -283,13 +360,10 @@ class BaseGLWidget(QOpenGLWidget):
                 self.translate(Rz @ np.array([trans_speed, 0, 0]))
 
     def update_model_view(self):
-        if not self._fixed_pipeline_available:
+        if not self._compatibility_pipeline:
             return
-        try:
-            glMatrixMode(GL_MODELVIEW)
-            glLoadMatrixf(self.view_matrix.T)
-        except GLError:
-            self._fixed_pipeline_available = False
+        glMatrixMode(GL_MODELVIEW)
+        glLoadMatrixf(self.view_matrix.T)
 
     def get_view_matrix(self):
         two = self.center  # the origin(center) in the world frame
@@ -313,11 +387,13 @@ class BaseGLWidget(QOpenGLWidget):
             self.set_euler(euler)
 
     def set_euler(self, euler):
-        self.euler = euler
+        self.euler = np.asarray(euler, dtype=np.float64)
         self.need_recalc_view = True
+        self.update()
 
     def set_color(self, color):
         self.color = color
+        self.update()
 
     def update(self):
         self.update_movement()
@@ -327,13 +403,10 @@ class BaseGLWidget(QOpenGLWidget):
         #     self.need_recalc_view = False
 
     def update_model_projection(self):
-        if not self._fixed_pipeline_available:
+        if not self._compatibility_pipeline:
             return
-        try:
-            glMatrixMode(GL_PROJECTION)
-            glLoadMatrixf(self.projection_matrix.T)
-        except GLError:
-            self._fixed_pipeline_available = False
+        glMatrixMode(GL_PROJECTION)
+        glLoadMatrixf(self.projection_matrix.T)
 
     def get_projection_matrix(self):
         w, h = self.current_width(), self.current_height()
@@ -363,14 +436,16 @@ class BaseGLWidget(QOpenGLWidget):
     def rotate(self, rx=0, ry=0, rz=0):
         # update the euler angles
         self.euler += np.array([rx, ry, rz])
-        self.euler[2] = (self.euler[2] + np.pi) % (2 * np.pi) - np.pi
-        self.euler[1] = (self.euler[1] + np.pi) % (2 * np.pi) - np.pi
-        self.euler[0] = np.clip(self.euler[0], 0, np.pi)
+        # Keep every axis continuous and wrapped instead of clipping pitch to
+        # 0..180 degrees. This permits a complete vertical orbit.
+        self.euler = (self.euler + np.pi) % (2 * np.pi) - np.pi
         self.need_recalc_view = True
+        self.update()
 
     def translate(self, trans):
         self.center += trans
         self.need_recalc_view = True
+        self.update()
 
     def change_show_center(self, state):
         self.enable_show_center = state
@@ -379,12 +454,14 @@ class BaseGLWidget(QOpenGLWidget):
         super().resizeEvent(event)
         self.need_recalc_view = True
         self.projection_matrix = self.get_projection_matrix()
+        self._projection_dirty = True
         self.update_model_projection()
 
     def resizeGL(self, width, height):
         """Notify initialized items while QOpenGLWidget owns the GL context."""
         super().resizeGL(width, height)
         self.projection_matrix = self.get_projection_matrix()
+        self._projection_dirty = False
         for item in self.items:
             if item.is_initialized():
                 item.resize_gl(self.current_width(), self.current_height())
@@ -411,11 +488,10 @@ class BaseGLWidget(QOpenGLWidget):
         height = self.current_height()
         x, y, z = p
         gl_y = height - y - 1
-        # Retrieve OpenGL matrices (column-major), convert to numpy arrays and transpose
-        view = np.array(glGetFloatv(GL_MODELVIEW_MATRIX),
-                        dtype=np.float32).reshape((4, 4)).T
-        proj = np.array(glGetFloatv(GL_PROJECTION_MATRIX),
-                        dtype=np.float32).reshape((4, 4)).T
+        # Explicit matrices work in Core Profile where fixed matrix state does
+        # not exist.
+        view = np.asarray(self.view_matrix, dtype=np.float32)
+        proj = np.asarray(self.projection_matrix, dtype=np.float32)
         # Convert screen (x, y, z) to normalized device coordinates (NDC)
         ndc_x = (x / width) * 2.0 - 1.0
         ndc_y = (gl_y / height) * 2.0 - 1.0
@@ -465,3 +541,30 @@ class BaseGLWidget(QOpenGLWidget):
         world_p = self.opengl_to_world((x, y, z))
 
         return world_p
+
+    def cleanup_gl(self):
+        """Release item resources exactly once with a current context."""
+        if self._cleanup_done:
+            return
+        context = self.context()
+        if context is None or not context.isValid():
+            return
+        self.makeCurrent()
+        try:
+            for item in self.items:
+                try:
+                    item.release_gl()
+                except Exception as exc:
+                    self.initialization_failed.emit(
+                        "OpenGL resource cleanup failed: {}".format(exc)
+                    )
+        finally:
+            self.doneCurrent()
+        self._cleanup_done = True
+
+    def closeEvent(self, event):
+        self.cleanup_gl()
+        setting_window = getattr(self, "setting_window", None)
+        if setting_window is not None:
+            setting_window.close()
+        super().closeEvent(event)

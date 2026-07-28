@@ -179,10 +179,10 @@ class CaptureSession:
         self._running = True
         logger.info("Capture session started")
 
-    def stop(self) -> None:
+    def stop(self, timeout: float = 5.0) -> bool:
         """Stop all producers."""
         if not self._running:
-            return
+            return True
 
         logger.info("Stopping capture session")
 
@@ -190,15 +190,28 @@ class CaptureSession:
         if self._is_recording.is_set():
             self.stop_recording()
 
-        # Stop alignment monitor
-        self._stop_alignment_monitor()
+        deadline = time.monotonic() + max(0.0, timeout)
+        all_stopped = self._stop_alignment_monitor(
+            max(0.0, deadline - time.monotonic())
+        )
 
-        # Stop all producers
+        # Signal every camera first. Waiting on producers one by one before
+        # signalling the next one can leave the final USB reader blocked for
+        # almost the entire shared shutdown deadline.
         for producer in self._producers.values():
-            producer.stop()
+            producer.request_stop()
 
+        # Then wait for each reader to release its own VideoCapture.
+        for producer in self._producers.values():
+            remaining = max(0.0, deadline - time.monotonic())
+            all_stopped = producer.wait_stopped(remaining) and all_stopped
+
+        if not all_stopped:
+            logger.error("Capture session still owns producer threads after timeout")
+            return False
         self._running = False
         logger.info("Capture session stopped")
+        return True
 
     def pause_producer(self, device_path: str) -> None:
         """Pause a specific producer by device path."""
@@ -302,16 +315,21 @@ class CaptureSession:
         self._stop_alignment_monitor()
 
         with self._state_lock:
-            producer = self._producers.pop(device_path, None)
+            producer = self._producers.get(device_path)
             if producer is None:
                 raise CaptureSessionError(f"No producer found for device path: {device_path}")
+        if not producer.stop():
+            self._start_alignment_monitor()
+            raise CaptureSessionError(
+                f"Producer did not stop; source remains managed: {device_path}"
+            )
+        with self._state_lock:
+            self._producers.pop(device_path, None)
             self._queue_bundles.pop(device_path, None)
             self._monitoring_last_frame_count.pop(device_path, None)
             if self._latest_stats is not None:
                 self._latest_stats.pop(device_path, None)
             self.sources = [source for source in self.sources if source.device_path != device_path]
-
-        producer.stop()
 
         self._start_alignment_monitor()
 
@@ -348,7 +366,10 @@ class CaptureSession:
 
         # Stop old producer
         old_producer = self._producers[device_path]
-        old_producer.stop()
+        if not old_producer.stop():
+            raise CaptureSessionError(
+                f"Producer did not stop; source was not replaced: {device_path}"
+            )
 
         # Drain stale display frame
         queues = self._queue_bundles[device_path]
@@ -527,7 +548,7 @@ class CaptureSession:
         2. Send sentinel (None) to each recording queue
         3. Recorder drains queues and finalizes MP4 + timestamps.csv
         """
-        if not self._is_recording.is_set():
+        if not self._is_recording.is_set() and self._frame_recorder is None:
             logger.warning("Not recording, nothing to stop")
             return None
 
@@ -538,13 +559,13 @@ class CaptureSession:
 
         logger.info("Stopping recording...")
 
-        # Clear flag first (producers stop pushing)
-        self._is_recording.clear()
-
-        # Send sentinels only to queues that were recording
-        for device_path in self._recording_device_paths:
-            self._queue_bundles[device_path].recording.put(None)
-        self._recording_device_paths = []
+        if self._is_recording.is_set():
+            # Clear flag first (producers stop pushing), and send sentinels
+            # exactly once. A timeout leaves the recorder owned for retry.
+            self._is_recording.clear()
+            for device_path in self._recording_device_paths:
+                self._queue_bundles[device_path].recording.put(None)
+            self._recording_device_paths = []
 
         # Stop recorder (drains queues, finalizes files)
         result = self._frame_recorder.stop()
@@ -555,6 +576,10 @@ class CaptureSession:
         )
 
         return result
+
+    @property
+    def has_pending_recording(self) -> bool:
+        return self._frame_recorder is not None
 
     @property
     def is_recording(self) -> bool:
@@ -578,10 +603,12 @@ class CaptureSession:
         )
         self._alignment_monitor.start()
 
-    def _stop_alignment_monitor(self) -> None:
+    def _stop_alignment_monitor(self, timeout: float = 5.0) -> bool:
         if self._alignment_monitor is not None:
-            self._alignment_monitor.stop()
+            if not self._alignment_monitor.stop(timeout):
+                return False
             self._alignment_monitor = None
+        return True
 
     def _restart_alignment_monitor(self) -> None:
         if not self._running:

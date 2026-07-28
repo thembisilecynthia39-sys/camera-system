@@ -21,8 +21,7 @@ class AsyncObjectDetector:
         self._results: dict[str, DetectionResult] = {}
         self._condition = Condition()
         self._shutdown = Event()
-        self._thread = Thread(target=self._run, daemon=True)
-        self._thread.start()
+        self._thread: Thread | None = None
 
     @property
     def backend_name(self) -> str:
@@ -31,6 +30,11 @@ class AsyncObjectDetector:
     def submit(self, device_path: str, frame: np.ndarray, frame_index: int) -> None:
         """Keep only the newest pending frame for a source."""
         with self._condition:
+            if self._shutdown.is_set():
+                return
+            if self._thread is None:
+                self._thread = Thread(target=self._run, daemon=True)
+                self._thread.start()
             self._pending[device_path] = (frame, frame_index)
             self._condition.notify()
 
@@ -38,14 +42,20 @@ class AsyncObjectDetector:
         with self._condition:
             return dict(self._results)
 
-    def stop(self, timeout: float = 3.0) -> None:
+    def stop(self, timeout: float = 3.0) -> bool:
         self._shutdown.set()
         with self._condition:
             self._condition.notify_all()
-        self._thread.join(timeout=timeout)
         close = getattr(self._detector, "close", None)
         if callable(close):
             close()
+        if self._thread is not None:
+            self._thread.join(timeout=timeout)
+            if self._thread.is_alive():
+                logger.error("Object detector thread did not stop within %.1fs", timeout)
+                return False
+            self._thread = None
+        return True
 
     def _run(self) -> None:
         while not self._shutdown.is_set():

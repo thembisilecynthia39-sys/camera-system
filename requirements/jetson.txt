@@ -1,0 +1,24 @@
+# Camera System 在 Jetson Orin Nano / JetPack 5.1.1 上验证的 Python 依赖。
+# 故意不包含 PySide6、PyQt5、opencv-python、opencv-contrib-python、CUDA、
+# TensorRT、torch：这些组件必须使用 JetPack/Ubuntu 原生版本。
+av==12.3.0
+annotated-types==0.7.0
+certifi==2019.11.28
+chardet==3.0.4
+idna==2.8
+markdown-it-py==3.0.0
+meshio==5.3.5
+mdurl==0.1.2
+numpy==1.23.5
+Pillow==10.4.0
+platformdirs==4.3.6
+pydantic==2.10.6
+pydantic-core==2.27.2
+PyOpenGL==3.1.7
+Pygments==2.19.2
+PyYAML==6.0.3
+requests==2.22.0
+rich==13.7.1
+rtoml==0.11.0
+typing-extensions==4.13.2
+urllib3==1.25.8

@@ -14,7 +14,7 @@ from urllib.parse import quote
 import requests
 
 from tx_rx.config import TxRxConfig, load_config
-from tx_rx.jetson_client.http_client import direct_session
+from tx_rx.jetson_client.http_client import direct_session, network_timeout
 from tx_rx.jetson_client.task_manifest import TaskPackageResult, build_configured_task_package
 from tx_rx.jetson_client.uploader import TaskUploadResult, upload_staged_task
 from tx_rx.protocol.models import AckResponse, PlyMetadata, StatusResponse, TaskStatus
@@ -43,23 +43,49 @@ def poll_status(
         _check_cancel(cancel_check)
         if time.monotonic() >= deadline:
             raise TransferError(f"status polling timed out for task {task_id}")
-        try:
-            response = client.get(
-                f"{config.server_url}/status/{quote(task_id, safe='')}",
-                timeout=config.request_timeout_seconds,
-            )
-            response.raise_for_status()
-            status = StatusResponse.model_validate(response.json())
-        except (requests.RequestException, ValueError, TypeError) as exc:
-            raise TransferError(f"cannot query status for task {task_id}: {exc}") from exc
-        _require_identity(status.task_id, status.capture_id, task_id, capture_id, "status")
+        remaining = max(0.1, deadline - time.monotonic())
+        status = get_status(
+            task_id,
+            capture_id,
+            config,
+            client,
+            timeout_seconds=min(config.request_timeout_seconds, remaining),
+        )
         if progress_callback:
             progress_callback(f"stage={status.stage or status.status.value} progress={status.progress}")
         if status.status is TaskStatus.FINISHED:
             return status
         if status.status is TaskStatus.FAILED:
             raise TransferError(f"reconstruction failed for task {task_id}: {status.error or status.message}")
-        _interruptible_wait(config.status_poll_interval_seconds, cancel_check)
+        _interruptible_wait(
+            min(config.status_poll_interval_seconds, max(0.0, deadline - time.monotonic())),
+            cancel_check,
+        )
+
+
+def get_status(
+    task_id: str,
+    capture_id: str,
+    config: TxRxConfig,
+    session: Optional[Any] = None,
+    timeout_seconds: Optional[float] = None,
+) -> StatusResponse:
+    """Query and validate one remote task status without polling."""
+
+    client = session or direct_session()
+    try:
+        response = client.get(
+            f"{config.server_url}/status/{quote(task_id, safe='')}",
+            timeout=network_timeout(
+                timeout_seconds or config.request_timeout_seconds
+            ),
+        )
+        response.raise_for_status()
+        status = StatusResponse.model_validate(response.json())
+    except (requests.RequestException, ValueError, TypeError) as exc:
+        raise TransferError(f"cannot query status for task {task_id}: {exc}") from exc
+    _require_identity(status.task_id, status.capture_id, task_id, capture_id, "status")
+    return status
 
 
 def get_ply_metadata(
@@ -74,7 +100,7 @@ def get_ply_metadata(
     try:
         response = client.get(
             f"{config.server_url}/result/{quote(task_id, safe='')}/metadata",
-            timeout=config.request_timeout_seconds,
+            timeout=network_timeout(config.request_timeout_seconds),
         )
         response.raise_for_status()
         metadata = PlyMetadata.model_validate(response.json())
@@ -114,6 +140,7 @@ def download_ply(
     result_dir.mkdir(parents=True, exist_ok=True)
     final_path = result_dir / final_filename
     part_path = result_dir / f"{final_filename}.part"
+    deadline = time.monotonic() + config.download_timeout_seconds
     if final_path.is_file():
         if final_path.stat().st_size == metadata.file_size and _sha256_file(final_path) == metadata.sha256:
             return final_path
@@ -123,6 +150,10 @@ def download_ply(
         with part_path.open("wb") as output:
             for chunk_index in range(metadata.chunk_count):
                 _check_cancel(cancel_check)
+                if time.monotonic() >= deadline:
+                    raise TransferError(
+                        f"PLY download timed out for task {metadata.task_id}"
+                    )
                 start = chunk_index * metadata.chunk_size
                 end = min(start + metadata.chunk_size, metadata.file_size) - 1
                 headers = {
@@ -133,27 +164,39 @@ def download_ply(
                     f"{config.server_url}/result/{quote(metadata.task_id, safe='')}",
                     headers=headers,
                     stream=True,
-                    timeout=config.download_timeout_seconds,
+                    timeout=network_timeout(
+                        max(0.1, deadline - time.monotonic()),
+                        read_cap=5.0,
+                    ),
                 )
-                if response.status_code != 206:
-                    raise TransferError(f"chunk {chunk_index}: expected HTTP 206, got {response.status_code}")
-                expected_length = end - start + 1
-                _validate_chunk_headers(response.headers, metadata, chunk_index, start, end, expected_length)
-                digest = hashlib.sha256()
-                received = 0
-                for data in response.iter_content(chunk_size=1024 * 1024):
-                    _check_cancel(cancel_check)
-                    if not data:
-                        continue
-                    received += len(data)
-                    if received > expected_length:
-                        raise TransferError(f"chunk {chunk_index}: response exceeds requested range")
-                    digest.update(data)
-                    output.write(data)
-                if received != expected_length:
-                    raise TransferError(f"chunk {chunk_index}: received {received} bytes, expected {expected_length}")
-                if digest.hexdigest() != response.headers["X-GO-Chunk-SHA256"]:
-                    raise TransferError(f"chunk {chunk_index}: SHA-256 mismatch")
+                try:
+                    if response.status_code != 206:
+                        raise TransferError(f"chunk {chunk_index}: expected HTTP 206, got {response.status_code}")
+                    expected_length = end - start + 1
+                    _validate_chunk_headers(response.headers, metadata, chunk_index, start, end, expected_length)
+                    digest = hashlib.sha256()
+                    received = 0
+                    for data in response.iter_content(chunk_size=1024 * 1024):
+                        _check_cancel(cancel_check)
+                        if time.monotonic() >= deadline:
+                            raise TransferError(
+                                f"PLY download timed out for task {metadata.task_id}"
+                            )
+                        if not data:
+                            continue
+                        received += len(data)
+                        if received > expected_length:
+                            raise TransferError(f"chunk {chunk_index}: response exceeds requested range")
+                        digest.update(data)
+                        output.write(data)
+                    if received != expected_length:
+                        raise TransferError(f"chunk {chunk_index}: received {received} bytes, expected {expected_length}")
+                    if digest.hexdigest() != response.headers["X-GO-Chunk-SHA256"]:
+                        raise TransferError(f"chunk {chunk_index}: SHA-256 mismatch")
+                finally:
+                    close = getattr(response, "close", None)
+                    if callable(close):
+                        close()
                 if progress_callback:
                     progress_callback(f"download={end + 1}/{metadata.file_size}")
             output.flush()
@@ -195,7 +238,7 @@ def acknowledge_result(
         response = client.post(
             f"{config.server_url}/result/{quote(metadata.task_id, safe='')}/ack",
             json=payload,
-            timeout=config.request_timeout_seconds,
+            timeout=network_timeout(config.request_timeout_seconds),
         )
         response.raise_for_status()
         ack = AckResponse.model_validate(response.json())

@@ -1,6 +1,6 @@
 # camera_system 工作区总览
 
-最后更新：2026-07-16
+最后更新：2026-07-28
 
 这个工作区包含从多摄像头采集、任务传输到 3DGS 结果查看的几个相对独立的子项目。各子项目保留自己的源码、配置和测试；其中部分目录还保留独立 Git 历史。本文件只说明它们之间的边界和协作关系。
 
@@ -40,6 +40,59 @@ Tx_Rx
 - Qt3D 实验原型：[`3DGSviewer/qt3d-experiments/README.md`](3DGSviewer/qt3d-experiments/README.md)
 
 状态说明：README 是用户入口；`status`、`审查`、`实现报告`和`提示词`文档记录开发过程或验证快照，不能替代用户操作步骤。
+
+## Jetson 统一桌面应用
+
+```bash
+./scripts/jetson/install.sh
+./scripts/jetson/run.sh
+./scripts/jetson/diagnose.sh
+```
+
+应用目录发布、桌面安装和平台依赖见
+[Jetson 发布说明](docs/releases/JETSON_RELEASE.md)，实际操作见
+[Jetson 用户说明](docs/user/JETSON_USER_GUIDE.md)。GitHub RX 的真实服务
+协议核对结果见 [Tx/RX 协议对齐记录](docs/releases/TX_RX_PROTOCOL_ALIGNMENT.md)。
+
+## 统一应用代码结构
+
+顶层 `src/` 是三个子项目之上的稳定编排层，不复制它们的具体实现：
+
+```text
+camera_system/
+├── 3DGSviewer/                 # 3D/Gaussian 查看组件
+├── Tx_Rx/                      # 传输与重建协议组件
+├── multiwebcam/                # 多摄像头采集组件
+├── config/examples/            # 可提交的配置模板
+├── docs/                       # 用户、开发、发布文档
+├── packaging/linux/            # Linux 桌面集成模板
+├── requirements/               # 平台依赖锁定
+├── resources/                  # 图标等静态资源
+├── scripts/jetson/             # 安装、启动、诊断、发布入口
+├── src/
+│   ├── camera_system/          # Qt 无关的领域、端口和适配器
+│   └── camera_system_app/      # 桌面应用壳
+└── tests/                      # 顶层协议、架构和应用测试
+```
+
+依赖方向、目录职责和变更放置规则见
+[架构与开发约定](docs/development/ARCHITECTURE.md)，全部文档入口见
+[文档索引](docs/README.md)。
+
+## 开发验证
+
+安装 Jetson 环境后，顶层测试无需手工拼接 `PYTHONPATH`：
+
+```bash
+.venv-jetson/bin/python -m pytest
+./scripts/jetson/diagnose.sh
+```
+
+仅验证 Qt 无关的协议与架构边界：
+
+```bash
+.venv-jetson/bin/python -m pytest tests/protocol tests/test_architecture.py
+```
 
 ## 版本控制边界
 

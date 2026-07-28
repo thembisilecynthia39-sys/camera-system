@@ -35,6 +35,8 @@ class GaussianItem(BaseItem):
         self.path = os.path.dirname(__file__)
         self.sort_enabled = sort_enabled
         self.sort_suspended = False
+        self.interactive_preview = False
+        self.interactive_max_gaussians = 120000
         self.sort_min_interval = max(float(sort_min_interval), 0.0)
         self.sort_direction_threshold = max(float(sort_direction_threshold), 0.0)
         self._last_sort_time = float('-inf')
@@ -111,9 +113,9 @@ class GaussianItem(BaseItem):
         indices = np.array([0, 1, 2, 0, 2, 3], dtype=np.uint32)
 
         # set the vertices for square
-        vbo = glGenBuffers(1)
+        self.vbo = glGenBuffers(1)
         glBindVertexArray(self.vao)
-        glBindBuffer(GL_ARRAY_BUFFER, vbo)
+        glBindBuffer(GL_ARRAY_BUFFER, self.vbo)
         glBufferData(GL_ARRAY_BUFFER, square_vert.nbytes,
                      square_vert, GL_STATIC_DRAW)
         pos = glGetAttribLocation(self.program, 'vert')
@@ -245,8 +247,11 @@ class GaussianItem(BaseItem):
         glBindVertexArray(self.vao)
         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, self.ebo)
         # draw instances
+        draw_count = self.gs_data.shape[0]
+        if self.interactive_preview and self.interactive_max_gaussians > 0:
+            draw_count = min(draw_count, self.interactive_max_gaussians)
         raw_glDrawElementsInstanced(
-            GL_TRIANGLES, 6, GL_UNSIGNED_INT, ctypes.c_void_p(0), self.gs_data.shape[0])
+            GL_TRIANGLES, 6, GL_UNSIGNED_INT, ctypes.c_void_p(0), draw_count)
         # upbind vao and ebo
         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0)
         glBindVertexArray(0)
@@ -279,6 +284,17 @@ class GaussianItem(BaseItem):
         """Force the next rendered frame to refresh the depth order."""
         self.prev_Rz = np.array([np.inf, np.inf, np.inf], dtype=np.float32)
         self._last_sort_time = float('-inf')
+
+    def set_interactive_preview(self, enabled, max_gaussians=120000):
+        """Trade transient interaction quality for lower Jetson GPU load."""
+        enabled = bool(enabled)
+        self.interactive_preview = enabled
+        self.interactive_max_gaussians = max(0, int(max_gaussians))
+        self.sort_suspended = enabled
+        # Keep prev_Rz unchanged while sorting is suspended. On the next frame
+        # try_sort() then sorts only if orbiting changed the view direction.
+        # Panning and plain clicks do not alter depth order and must not launch
+        # the very expensive full-model bitonic sort.
 
     def openg_sort(self):
         if self.sort_program is None:
@@ -317,6 +333,12 @@ class GaussianItem(BaseItem):
 
     def preprocessGS(self):
         glUseProgram(self.prep_program)
+        active_sh_dim = (
+            min(self.sh_dim, 3)
+            if self.interactive_preview
+            else self.sh_dim
+        )
+        set_uniform(self.prep_program, active_sh_dim, 'sh_dim')
         set_uniform(self.prep_program, self.view_matrix, 'view_matrix')
         raw_glDispatchCompute(div_round_up(self.gs_data.shape[0], 256), 1, 1)
         raw_glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT)
@@ -341,3 +363,23 @@ class GaussianItem(BaseItem):
             self.request_sort()
             self.cuda_pw = None
             self.need_updateGS = True
+
+    def release_gl(self):
+        """Delete all shader programs and buffers owned by this item."""
+        buffers = [
+            getattr(self, name, 0)
+            for name in ("vbo", "ebo", "ssbo_gs", "ssbo_gi", "ssbo_dp", "ssbo_pp")
+        ]
+        buffers = [int(handle) for handle in buffers if handle]
+        if buffers:
+            glDeleteBuffers(len(buffers), buffers)
+        vao = getattr(self, "vao", 0)
+        if vao:
+            glDeleteVertexArrays(1, [int(vao)])
+        for name in ("program", "prep_program", "sort_program"):
+            program = getattr(self, name, None)
+            if program:
+                glDeleteProgram(int(program))
+                setattr(self, name, None)
+        self.cuda_pw = None
+        super().release_gl()

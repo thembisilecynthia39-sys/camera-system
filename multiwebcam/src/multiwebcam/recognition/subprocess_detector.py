@@ -8,6 +8,7 @@ import logging
 import subprocess
 from collections import deque
 from pathlib import Path
+from queue import Empty, Queue
 from threading import Thread
 from time import perf_counter
 
@@ -38,12 +39,16 @@ class SubprocessObjectDetector:
 
         self._settings = settings
         self._service_backend = settings.service_backend or "ultralytics_tensorrt"
-        self._process = self._start_process()
         self._stdout_noise_lines: deque[str] = deque(maxlen=50)
         self._stderr_lines: deque[str] = deque(maxlen=50)
+        self._process = self._start_process()
         self._stderr_thread = Thread(target=self._drain_stderr, daemon=True)
         self._stderr_thread.start()
-        self._await_ready()
+        try:
+            self._await_ready()
+        except Exception:
+            self.close()
+            raise
 
     def detect(self, frame: np.ndarray, frame_index: int) -> DetectionResult:
         started = perf_counter()
@@ -88,18 +93,25 @@ class SubprocessObjectDetector:
         )
 
     def close(self) -> None:
-        if self._process.poll() is not None:
-            return
-        try:
-            self._write_message({"command": "shutdown"})
-        except Exception:
-            pass
-        try:
-            self._process.terminate()
-            self._process.wait(timeout=3.0)
-        except Exception:
-            self._process.kill()
-            self._process.wait(timeout=3.0)
+        if self._process.poll() is None:
+            try:
+                self._write_message({"command": "shutdown"})
+            except Exception:
+                pass
+            try:
+                self._process.terminate()
+                self._process.wait(timeout=3.0)
+            except Exception:
+                self._process.kill()
+                self._process.wait(timeout=3.0)
+        for stream in (self._process.stdin, self._process.stdout, self._process.stderr):
+            if stream is not None:
+                try:
+                    stream.close()
+                except OSError:
+                    pass
+        if self._stderr_thread is not None and self._stderr_thread.is_alive():
+            self._stderr_thread.join(timeout=1.0)
 
     def _start_process(self) -> subprocess.Popen[str]:
         script_path = self._settings.service_script or str(self._default_service_script())
@@ -151,7 +163,22 @@ class SubprocessObjectDetector:
         raise RuntimeError("subprocess inference requires service_python or service_conda_env")
 
     def _await_ready(self) -> None:
-        response = self._read_message()
+        result = Queue(maxsize=1)
+
+        def read_ready() -> None:
+            try:
+                result.put((self._read_message(), None))
+            except Exception as exc:
+                result.put((None, exc))
+
+        reader = Thread(target=read_ready, daemon=True)
+        reader.start()
+        try:
+            response, error = result.get(timeout=30.0)
+        except Empty as exc:
+            raise RuntimeError("inference service startup timed out") from exc
+        if error is not None:
+            raise error
         if response.get("status") != "ready":
             raise RuntimeError(response.get("error", "inference service failed to start"))
 

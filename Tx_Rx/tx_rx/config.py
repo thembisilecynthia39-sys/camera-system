@@ -23,9 +23,15 @@ class TxRxConfig(BaseModel):
     schema_version: str = Field(min_length=1)
     staging_root: Path
     server_url: str = Field(default="http://10.150.14.62:8000", min_length=1)
-    remote_task_root: str = Field(default="/home/yp/GaussianObject/rx_tasks", min_length=1)
+    remote_task_root: Optional[str] = None
     upload_timeout_seconds: int = Field(default=300, ge=1, le=86400)
-    result_root: Path = Path("/home/jetson/3DGS/results")
+    result_root: Path = Field(
+        default_factory=lambda: Path.home()
+        / ".local"
+        / "share"
+        / "camera-system"
+        / "results"
+    )
     result_layout: Literal["task_nested", "capture_flat"] = "task_nested"
     request_timeout_seconds: int = Field(default=300, ge=1, le=86400)
     status_poll_interval_seconds: float = Field(default=2.0, gt=0, le=3600)
@@ -59,7 +65,9 @@ class TxRxConfig(BaseModel):
 
     @field_validator("remote_task_root")
     @classmethod
-    def validate_remote_task_root(cls, value: str) -> str:
+    def validate_remote_task_root(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
         normalized = value.rstrip("/")
         if not normalized.startswith("/"):
             raise ValueError("remote_task_root must be an absolute WSL path")

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import numpy as np
 
 from multiwebcam.quality.guidance import CaptureGuidanceTracker
@@ -91,6 +93,30 @@ def test_validation_blocks_capture_when_detector_does_not_find_target():
     assert not validation.accepted
     assert "target not detected" in validation.message
     assert not validation.guidance.ready_to_capture
+
+
+def test_live_guidance_can_skip_expensive_descriptor_matching(monkeypatch):
+    tracker = CaptureGuidanceTracker()
+    packets = make_packets(45)
+    quality = evaluate_capture_set(packets)
+    tracker.register_capture(0, 1, packets, quality)
+
+    def unexpected_match(*_args):
+        raise AssertionError("live guidance must not run ORB matching")
+
+    monkeypatch.setattr(
+        "multiwebcam.quality.guidance._descriptor_overlap",
+        unexpected_match,
+    )
+
+    guidance = tracker.evaluate(
+        make_packets(55),
+        quality,
+        45,
+        check_matchability=False,
+    )
+
+    assert guidance.next_angle_deg == 45
 
 
 def test_tracker_marks_loop_complete_after_all_required_angles():

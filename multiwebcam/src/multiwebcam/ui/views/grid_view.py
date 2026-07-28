@@ -70,8 +70,9 @@ class GridView(QWidget):
     transfer_folder_requested = Signal()
     transfer_upload_requested = Signal(str)
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, capture_only: bool = False):
         super().__init__(parent)
+        self._capture_only = capture_only
         self._tiles: dict[int, SourceTile] = {}
         self._errored_source_ids: set[int] = set()
         self._ignored_source_ids: set[int] = set()
@@ -263,6 +264,8 @@ class GridView(QWidget):
         data_body.addWidget(self._status_row("activity", "数据传输", self._data_transmit_value))
         data_body.addWidget(self._status_row("cube", "3DGS 接收", self._data_receive_value))
         overview_layout.addWidget(data_card, stretch=1)
+        if self._capture_only:
+            data_card.hide()
 
         self._quality_label = QLabel("质量: --")
         self._quality_label.setObjectName("overviewStatus")
@@ -360,6 +363,8 @@ class GridView(QWidget):
         control_layout.addWidget(self._record_btn)
         control_layout.addWidget(self._photo_btn)
         control_layout.addWidget(self._upload_staged_btn)
+        if self._capture_only:
+            self._upload_staged_btn.hide()
         control_layout.addWidget(self._stop_btn)
         self._duration_label = QLabel("00:00:00")
         self._duration_label.setObjectName("timerLabel")
@@ -380,13 +385,39 @@ class GridView(QWidget):
         self._angle_combo.currentTextChanged.connect(self._on_angle_changed)
         guide_layout.addWidget(self._angle_combo)
 
-        self._guide_progress_label = QLabel("进度: 0%")
-        self._guide_now_label = QLabel("当前: --")
-        self._guide_next_label = QLabel("下一角度: 0°")
-        self._guide_done_label = QLabel("已完成: --")
+        self._guide_progress_label = QLabel("八角度采集进度")
+        self._guide_progress_label.setObjectName("sideLabel")
+        guide_layout.addWidget(self._guide_progress_label)
+        self._guide_progress = QProgressBar()
+        self._guide_progress.setObjectName("captureProgress")
+        self._guide_progress.setRange(0, 100)
+        self._guide_progress.setValue(0)
+        self._guide_progress.setFormat("0 / 8")
+        self._guide_progress.setAccessibleName("八角度采集进度")
+        guide_layout.addWidget(self._guide_progress)
+
+        angle_steps = QWidget()
+        angle_steps.setObjectName("angleSteps")
+        angle_steps_layout = QGridLayout(angle_steps)
+        angle_steps_layout.setContentsMargins(0, 2, 0, 6)
+        angle_steps_layout.setHorizontalSpacing(5)
+        angle_steps_layout.setVerticalSpacing(5)
+        self._guide_angle_steps = {}
+        for index, angle in enumerate(range(0, 360, 45)):
+            step = QLabel(f"{angle}°")
+            step.setObjectName("angleStep")
+            step.setProperty("state", "pending")
+            step.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            step.setToolTip(f"{angle}° 尚未采集")
+            angle_steps_layout.addWidget(step, index // 4, index % 4)
+            self._guide_angle_steps[angle] = step
+        guide_layout.addWidget(angle_steps)
+
+        self._guide_now_label = QLabel("当前画质: --")
+        self._guide_next_label = QLabel("建议下一角度: 0°")
+        self._guide_done_label = QLabel("已完成 0 / 8")
         self._guide_warning_label = QLabel("")
         for label in (
-            self._guide_progress_label,
             self._guide_now_label,
             self._guide_next_label,
             self._guide_done_label,
@@ -528,8 +559,6 @@ class GridView(QWidget):
         model_layout.addStretch()
         self._panel_stack.addWidget(model_page)
 
-        from multiwebcam.ui.views.gaussian_model_view import GaussianModelView
-
         self._content_stack = QStackedWidget()
         video_page = QWidget()
         video_page.setLayout(content_column)
@@ -550,7 +579,11 @@ class GridView(QWidget):
         workspace_grid.setHorizontalSpacing(16)
         workspace_grid.setVerticalSpacing(16)
 
-        transfer_card, transfer_card_body = self._dashboard_card("① 待发送任务", "本机照片")
+        transfer_card, transfer_card_body = self._dashboard_card(
+            "① 待发送任务",
+            "本机照片",
+            object_name="transferCard",
+        )
         self._transfer_object_label = QLabel("尚未选择任务")
         self._transfer_object_label.setObjectName("sectionTitle")
         transfer_card_body.addWidget(self._transfer_object_label)
@@ -563,7 +596,11 @@ class GridView(QWidget):
         transfer_card_body.addWidget(self._transfer_folder_label)
         workspace_grid.addWidget(transfer_card, 0, 0)
 
-        progress_card, progress_body = self._dashboard_card("② 传输进度", "实时状态")
+        progress_card, progress_body = self._dashboard_card(
+            "② 传输进度",
+            "实时状态",
+            object_name="transferCard",
+        )
         self._transfer_progress = QProgressBar()
         self._transfer_progress.setRange(0, 100)
         self._transfer_progress.setValue(0)
@@ -582,7 +619,11 @@ class GridView(QWidget):
         progress_body.addWidget(self._transfer_stage_label)
         workspace_grid.addWidget(progress_card, 0, 1)
 
-        result_card, result_body = self._dashboard_card("③ 上位机保存位置", "上传后显示")
+        result_card, result_body = self._dashboard_card(
+            "③ 上位机保存位置",
+            "上传后显示",
+            object_name="transferCard",
+        )
         self._transfer_result_name = QLabel("等待上传")
         self._transfer_result_name.setObjectName("sectionTitle")
         result_body.addWidget(self._transfer_result_name)
@@ -603,7 +644,11 @@ class GridView(QWidget):
         result_body.addWidget(self._transfer_local_model)
         workspace_grid.addWidget(result_card, 1, 0)
 
-        log_card, log_body = self._dashboard_card("运行日志与成功依据", "可追溯")
+        log_card, log_body = self._dashboard_card(
+            "运行日志与成功依据",
+            "可追溯",
+            object_name="transferCard",
+        )
         self._transfer_log = QTextEdit()
         self._transfer_log.setObjectName("transferLog")
         self._transfer_log.setReadOnly(True)
@@ -616,9 +661,14 @@ class GridView(QWidget):
         workspace_grid.setColumnStretch(1, 1)
         transfer_content_layout.addLayout(workspace_grid, stretch=1)
         self._content_stack.addWidget(transfer_content)
-        self._model_view = GaussianModelView()
-        self._model_view.model_loaded.connect(self._on_3dgs_model_loaded)
-        self._model_view.load_failed.connect(self._on_3dgs_model_failed)
+        if self._capture_only:
+            self._model_view = QWidget()
+        else:
+            from multiwebcam.ui.views.gaussian_model_view import GaussianModelView
+
+            self._model_view = GaussianModelView()
+            self._model_view.model_loaded.connect(self._on_3dgs_model_loaded)
+            self._model_view.load_failed.connect(self._on_3dgs_model_failed)
         self._content_stack.addWidget(self._model_view)
 
         self._system_status = SystemStatusBar()
@@ -628,7 +678,9 @@ class GridView(QWidget):
         self._system_status.refresh_gpu()
         self._system_status.set_camera_count(0)
         self._system_status.set_capture_paused(False)
-        self._bottom_status = BottomStatusBar()
+        self._bottom_status = BottomStatusBar(
+            enable_network_checks=not self._capture_only
+        )
         content_region = QVBoxLayout()
         content_region.setContentsMargins(0, 0, 0, 0)
         content_region.setSpacing(0)
@@ -657,14 +709,22 @@ class GridView(QWidget):
         )
         self._copy_remote_path_btn.clicked.connect(self._copy_transfer_remote_path)
 
+        if self._capture_only:
+            for index in (4, 5):
+                self._nav_buttons[index].hide()
+
         self._update_dest_summary()
         QTimer.singleShot(0, lambda: self._panel_scroll.verticalScrollBar().setValue(0))
 
     def _select_workspace(self, index: int) -> None:
+        if self._capture_only and index >= 4:
+            return
         self._panel_stack.setCurrentIndex(index)
         content_index = 1 if index == 4 else 2 if index == 5 else 0
         self._content_stack.setCurrentIndex(content_index)
-        self._model_view.set_active(index == 5)
+        set_active = getattr(self._model_view, "set_active", None)
+        if callable(set_active):
+            set_active(index == 5)
         self.workspace_changed.emit(index)
 
     def set_transfer_folder(self, path: Path) -> None:
@@ -742,6 +802,8 @@ class GridView(QWidget):
             self._fullscreen_btn.setText("退出全屏")
 
     def load_model(self, path: str) -> None:
+        if self._capture_only:
+            return
         self._model_status_label.setText("正在加载模型...")
         self._data_receive_value.setText("正在接收模型...")
         self._model_view.load_model(Path(path))
@@ -768,7 +830,15 @@ class GridView(QWidget):
 
     def shutdown(self) -> None:
         """Release child workers before the view is removed from the stack."""
-        self._model_view.shutdown()
+        self._system_status.shutdown()
+        self._bottom_status.shutdown()
+        shutdown = getattr(self._model_view, "shutdown", None)
+        if callable(shutdown):
+            shutdown()
+
+    def closeEvent(self, event) -> None:
+        self.shutdown()
+        super().closeEvent(event)
 
     def set_video_paused(self, paused: bool, message: str = "") -> None:
         self._pause_video_btn.setText("继续视频传输" if paused else "暂停视频传输")
@@ -809,9 +879,14 @@ class GridView(QWidget):
         # reflow once more with the settled geometry.
         QTimer.singleShot(0, self._relayout_tiles)
 
-    def _dashboard_card(self, title: str, kicker: str) -> tuple[QFrame, QVBoxLayout]:
+    def _dashboard_card(
+        self,
+        title: str,
+        kicker: str,
+        object_name: str = "dashboardCard",
+    ) -> tuple[QFrame, QVBoxLayout]:
         card = QFrame()
-        card.setObjectName("dashboardCard")
+        card.setObjectName(object_name)
         layout = QVBoxLayout(card)
         layout.setContentsMargins(12, 8, 12, 8)
         layout.setSpacing(4)
@@ -1210,26 +1285,31 @@ class GridView(QWidget):
     def update_guidance(self, guidance: object | None) -> None:
         """Update the lower-right capture guidance panel."""
         if guidance is None:
-            self._guide_progress_label.setText("进度: 0%")
-            self._guide_now_label.setText("当前: --")
-            self._guide_next_label.setText("下一角度: --")
-            self._guide_done_label.setText("已完成: --")
+            self._guide_progress.setValue(0)
+            self._guide_progress.setFormat("0 / 8")
+            self._guide_now_label.setText("当前画质: --")
+            self._guide_next_label.setText("建议下一角度: --")
+            self._guide_done_label.setText("已完成 0 / 8")
             self._guide_warning_label.setText("")
+            self._update_guide_angle_steps((), None)
             _set_pill_status(self._guide_now_label, "muted")
             return
 
-        done = " ".join(f"{angle}" for angle in guidance.completed_angles) or "--"
+        completed = tuple(guidance.completed_angles)
         if getattr(guidance, "loop_complete", False) and guidance.next_angle_deg is None:
             next_angle = "360° 完成"
         else:
             next_angle = "--" if guidance.next_angle_deg is None else f"{guidance.next_angle_deg}°"
-        self._guide_progress_label.setText(f"进度: {guidance.progress_percent:.0f}%")
+        self._guide_progress.setValue(round(guidance.progress_percent))
+        self._guide_progress.setFormat(f"{len(completed)} / 8")
         self._guide_now_label.setText(
-            f"当前: {guidance.readiness_percent:.0f}% {_zh_readiness_label(guidance.readiness_label)}"
+            f"当前画质: {guidance.readiness_percent:.0f}% "
+            f"{_zh_readiness_label(guidance.readiness_label)}"
         )
-        self._guide_next_label.setText(f"下一角度: {next_angle}")
-        self._guide_done_label.setText(f"已完成: {done}")
+        self._guide_next_label.setText(f"建议下一角度: {next_angle}")
+        self._guide_done_label.setText(f"已完成 {len(completed)} / 8")
         self._guide_warning_label.setText(_zh_guidance_warning(guidance.warning))
+        self._update_guide_angle_steps(completed, guidance.current_angle_deg)
 
         if guidance.ready_to_capture:
             _set_pill_status(self._guide_now_label, "good")
@@ -1237,6 +1317,27 @@ class GridView(QWidget):
             _set_pill_status(self._guide_now_label, "warn")
         else:
             _set_pill_status(self._guide_now_label, "bad")
+
+    def _update_guide_angle_steps(
+        self,
+        completed_angles: tuple[int, ...],
+        current_angle: int | None,
+    ) -> None:
+        completed = set(completed_angles)
+        for angle, step in self._guide_angle_steps.items():
+            if angle in completed:
+                state = "done"
+                tooltip = f"{angle}° 已完成"
+            elif angle == current_angle:
+                state = "current"
+                tooltip = f"{angle}° 当前选择"
+            else:
+                state = "pending"
+                tooltip = f"{angle}° 尚未采集"
+            step.setProperty("state", state)
+            step.setToolTip(tooltip)
+            step.style().unpolish(step)
+            step.style().polish(step)
 
     def update_alignment(self, alignment: AlignmentStats | None) -> None:
         """Update alignment stats in status bar."""
@@ -1430,6 +1531,15 @@ class GridView(QWidget):
         """Show one-shot photo capture result in the status bar."""
         self._status_label.setText(message)
         _set_pill_status(self._status_label, "good" if ok else "bad")
+
+    def set_photo_busy(self, busy: bool) -> None:
+        """Prevent duplicate still requests while JPEG compression is running."""
+        self._photo_btn.setEnabled(not busy)
+        self._record_btn.setEnabled(not busy)
+        self._photo_btn.setText("正在保存..." if busy else "拍摄当前角度")
+        if not busy:
+            self._update_record_enabled()
+            self._photo_btn.setEnabled(not self._stop_btn.isEnabled())
 
     def selected_angle_deg(self) -> int:
         """Return the currently selected capture angle."""

@@ -115,7 +115,7 @@ class AlignmentMonitor:
         self._thread.start()
         logger.info("AlignmentMonitor started")
 
-    def stop(self, timeout: float = 5.0) -> None:
+    def stop(self, timeout: float = 5.0) -> bool:
         """
         Stop the monitoring thread.
 
@@ -123,7 +123,7 @@ class AlignmentMonitor:
             timeout: Maximum time to wait for thread to join (seconds)
         """
         if not self._running:
-            return
+            return True
 
         logger.info("Stopping AlignmentMonitor")
         self._shutdown_event.set()
@@ -132,9 +132,11 @@ class AlignmentMonitor:
             self._thread.join(timeout=timeout)
             if self._thread.is_alive():
                 logger.warning(f"AlignmentMonitor thread did not terminate within {timeout}s")
+                return False
 
         self._running = False
         logger.info("AlignmentMonitor stopped")
+        return True
 
     def _run(self) -> None:
         """Background thread: drain queues, build clusters, update stats."""

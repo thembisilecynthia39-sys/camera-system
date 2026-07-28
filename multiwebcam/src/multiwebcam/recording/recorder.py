@@ -31,6 +31,10 @@ class RecordingResult:
     timestamps_path: Path  # Path to timestamps.csv
 
 
+class RecordingDrainTimeout(RuntimeError):
+    """One or more encoder threads are still owned by this recorder."""
+
+
 class FrameRecorder:
     """
     Orchestrates per-camera encoder threads for a recording session.
@@ -169,13 +173,20 @@ class FrameRecorder:
 
         logger.info("Stopping recording, draining encoder queues...")
 
-        # Wait for all encoder threads to finish (they exit on sentinel)
+        # Use one total deadline, not a full timeout per camera.
+        deadline = time.monotonic() + max(0.0, drain_timeout)
+        unfinished = []
         for encoder in self._encoders:
-            finished = encoder.join(timeout=drain_timeout)
+            finished = encoder.join(timeout=max(0.0, deadline - time.monotonic()))
             if not finished:
+                unfinished.append(encoder.cam_id)
                 logger.warning(
                     f"Encoder for cam_{encoder.cam_id} did not finish within {drain_timeout}s timeout"
                 )
+        if unfinished:
+            raise RecordingDrainTimeout(
+                "Encoder threads still running for cameras: {}".format(unfinished)
+            )
 
         # Calculate duration
         duration = self.recording_duration
