@@ -214,6 +214,10 @@ def test_capture_empty_state_opens_diagnostics(
     context = build_context(project_root=str(PROJECT_ROOT))
     window = MainWindow(context.paths, context.settings)
 
+    assert (
+        SEMANTIC_DARK["interactive"].lower()
+        in window.capture_page._empty_state.text().lower()
+    )
     window.capture_page._empty_state.linkActivated.emit("diagnostics")
 
     assert window.navigation.currentRow() == 5

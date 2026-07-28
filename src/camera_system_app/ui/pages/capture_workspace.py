@@ -39,7 +39,8 @@ class CaptureWorkspacePage(QWidget):
         self._empty_state = QLabel(
             "<h2>◎ 等待摄像头画面</h2>"
             "<p>采集服务正在发现设备。若长时间没有画面，请检查 USB 连接。</p>"
-            "<p><a href=\"diagnostics\">打开环境诊断</a></p>"
+            '<p><a href="diagnostics" style="color: {};">'
+            "打开环境诊断</a></p>".format(SEMANTIC_DARK["interactive"])
         )
         self._empty_state.setObjectName("captureEmptyState")
         self._empty_state.setAlignment(Qt.AlignCenter)
