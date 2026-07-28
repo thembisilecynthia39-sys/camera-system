@@ -247,18 +247,36 @@ class GaussianModelView(QWidget):
 
         class InteractiveGaussianGLWidget(GaussianGLWidget):
             def mousePressEvent(self, event):
-                owner._begin_interaction()
                 self.setCursor(Qt.CursorShape.ClosedHandCursor)
                 super().mousePressEvent(event)
 
             def mouseMoveEvent(self, event):
                 position = event.localPos()
-                if not hasattr(self, "mousePos"):
-                    self.mousePos = position
-                delta = position - self.mousePos
+                buttons = event.buttons()
+                if not buttons & (
+                    Qt.MouseButton.LeftButton
+                    | Qt.MouseButton.RightButton
+                    | Qt.MouseButton.MiddleButton
+                ):
+                    return
+                start = self._drag_start_pos
+                if start is None:
+                    start = position
+                    self._drag_start_pos = start
+                if not self._drag_started:
+                    delta = position - start
+                    if (
+                        abs(delta.x()) + abs(delta.y())
+                        < self._drag_threshold
+                    ):
+                        return
+                    self._drag_started = True
+                    owner._begin_interaction()
+                else:
+                    delta = position - self.mousePos
                 self.mousePos = position
 
-                if event.buttons() & Qt.MouseButton.LeftButton:
+                if buttons & Qt.MouseButton.LeftButton:
                     # Conventional orbit control: horizontal drag changes yaw,
                     # vertical drag changes pitch, including top/bottom views.
                     self.rotate(
@@ -266,7 +284,7 @@ class GaussianModelView(QWidget):
                         0.0,
                         radians(-delta.x() * 0.25),
                     )
-                elif event.buttons() & (Qt.MouseButton.RightButton | Qt.MouseButton.MiddleButton):
+                elif buttons & (Qt.MouseButton.RightButton | Qt.MouseButton.MiddleButton):
                     rotation = euler_to_matrix(self.euler)
                     inverse_intrinsics = np.linalg.inv(self.get_K())
                     distance = max(self.dist, 0.5)
@@ -276,9 +294,11 @@ class GaussianModelView(QWidget):
                 self.update()
 
             def mouseReleaseEvent(self, event):
+                had_drag = self._drag_started
                 super().mouseReleaseEvent(event)
                 self.setCursor(Qt.CursorShape.OpenHandCursor)
-                owner._end_interaction()
+                if had_drag:
+                    owner._end_interaction()
 
             def wheelEvent(self, event):
                 owner._begin_interaction()
@@ -290,6 +310,7 @@ class GaussianModelView(QWidget):
         self._gl_widget.setCursor(Qt.CursorShape.OpenHandCursor)
         self._gl_widget.set_color(np.array([0.05, 0.07, 0.09, 1.0]))
         self._gl_widget.enable_show_center = False
+        self._gl_widget.enable_depth_picking = False
         self._gaussian_item = GaussianItem(
             sort_enabled=self._high_quality_checkbox.isChecked(),
             sort_backend="opengl",

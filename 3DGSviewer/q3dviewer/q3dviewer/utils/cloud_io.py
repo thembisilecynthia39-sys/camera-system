@@ -3,6 +3,8 @@ Copyright 2024 Panasonic Advanced Technology Development Co.,Ltd. (Liu Yang)
 Distributed under MIT license. See LICENSE for more information.
 """
 
+import os
+
 import numpy as np
 
 
@@ -404,16 +406,23 @@ def _ply_property_dtype(type_name):
     return type_map[type_name]
 
 
-def _load_binary_little_endian_ply(path):
+def _check_cancel(cancel_check):
+    if cancel_check is not None and cancel_check():
+        raise InterruptedError("Gaussian PLY loading cancelled")
+
+
+def _load_binary_little_endian_ply(path, cancel_check=None):
     vertex_count = None
     properties = []
     in_vertex = False
 
     with open(path, 'rb') as f:
+        _check_cancel(cancel_check)
         if f.readline().strip() != b'ply':
             raise ValueError("Invalid PLY file: missing ply magic")
         format_seen = False
         while True:
+            _check_cancel(cancel_check)
             raw = f.readline()
             if not raw:
                 raise ValueError("Invalid PLY file: missing end_header")
@@ -440,74 +449,121 @@ def _load_binary_little_endian_ply(path):
         if not format_seen:
             raise ValueError("Invalid PLY file: missing format declaration")
         dtype = np.dtype(properties)
-        data = np.fromfile(f, dtype=dtype, count=vertex_count)
-        if len(data) != vertex_count:
+        data_offset = f.tell()
+        available_bytes = max(0, os.path.getsize(path) - data_offset)
+        expected_bytes = vertex_count * dtype.itemsize
+        if available_bytes < expected_bytes:
             raise ValueError(
-                f"Truncated PLY file: expected {vertex_count} vertices, got {len(data)}"
+                "Truncated PLY file: expected {} vertices, got {}".format(
+                    vertex_count,
+                    available_bytes // max(1, dtype.itemsize),
+                )
             )
-        return data
+    _check_cancel(cancel_check)
+    if vertex_count == 0:
+        return np.empty(0, dtype=dtype)
+    return np.memmap(
+        path,
+        dtype=dtype,
+        mode='r',
+        offset=data_offset,
+        shape=(vertex_count,),
+    )
 
 
-def _make_gs_from_arrays(points, data):
-    pws = points[:, :3]
+def _make_gs_from_arrays(
+        points,
+        data,
+        cancel_check=None,
+        chunk_rows=65536,
+):
     names = data.keys() if hasattr(data, 'keys') else data.dtype.names
-
-    alphas = data['opacity']
-    alphas = 1 / (1 + np.exp(-alphas))
-
-    scales = np.vstack((data['scale_0'],
-                        data['scale_1'],
-                        data['scale_2'])).T
-
-    rots = np.vstack((data['rot_0'],
-                      data['rot_1'],
-                      data['rot_2'],
-                      data['rot_3'])).T
-    rots /= np.linalg.norm(rots, axis=1)[:, np.newaxis]
 
     rest_names = sorted(
         [name for name in names if name.startswith('f_rest_')],
         key=lambda name: int(name.rsplit('_', 1)[1]))
     sh_dim = 3 + len(rest_names)
-    shs = np.zeros([pws.shape[0], sh_dim])
-    shs[:, 0] = data['f_dc_0']
-    shs[:, 1] = data['f_dc_1']
-    shs[:, 2] = data['f_dc_2']
+    sh_rest_dim = len(rest_names)
+    row_count = len(data) if points is None else len(points)
+    chunk_rows = max(1, int(chunk_rows))
+    gs = np.empty(row_count, dtype=gsdata_type(sh_dim))
 
-    sh_rest_dim = sh_dim - 3
-    if sh_rest_dim > 0:
-        for i, name in enumerate(rest_names):
-            shs[:, 3 + i] = data[name]
-        shs[:, 3:] = shs[:, 3:].reshape(-1, 3, sh_rest_dim // 3).transpose([0, 2, 1]).reshape(-1, sh_rest_dim)
+    for start in range(0, row_count, chunk_rows):
+        _check_cancel(cancel_check)
+        end = min(row_count, start + chunk_rows)
+        source = (
+            data[start:end]
+            if points is None
+            else {name: values[start:end] for name, values in data.items()}
+        )
+        if points is None:
+            pws = np.column_stack(
+                (source['x'], source['y'], source['z'])
+            )
+        else:
+            pws = np.asarray(points[start:end, :3])
+        rots = np.column_stack(
+            tuple(source[f'rot_{index}'] for index in range(4))
+        ).astype(np.float32)
+        rots /= np.linalg.norm(rots, axis=1)[:, np.newaxis]
+        scales = np.exp(
+            np.column_stack(
+                tuple(source[f'scale_{index}'] for index in range(3))
+            )
+        ).astype(np.float32)
+        alphas = (
+            1 / (1 + np.exp(-source['opacity']))
+        ).astype(np.float32)
+        shs = np.empty((end - start, sh_dim), dtype=np.float32)
+        shs[:, :3] = np.column_stack(
+            tuple(source[f'f_dc_{index}'] for index in range(3))
+        )
+        if sh_rest_dim > 0:
+            rest = np.column_stack(
+                tuple(source[name] for name in rest_names)
+            )
+            shs[:, 3:] = (
+                rest.reshape(-1, 3, sh_rest_dim // 3)
+                .transpose(0, 2, 1)
+                .reshape(-1, sh_rest_dim)
+            )
+        gs['pw'][start:end] = pws.astype(np.float32)
+        gs['rot'][start:end] = rots
+        gs['scale'][start:end] = scales
+        gs['alpha'][start:end] = alphas
+        gs['sh'][start:end] = shs
 
-    pws = pws.astype(np.float32)
-    rots = rots.astype(np.float32)
-    scales = np.exp(scales).astype(np.float32)
-    alphas = alphas.astype(np.float32)
-    shs = shs.astype(np.float32)
-
-    dtypes = gsdata_type(sh_dim)
-
-    gs = np.rec.fromarrays(
-        [pws, rots, scales, alphas, shs], dtype=dtypes)
-
-    return gs
+    _check_cancel(cancel_check)
+    return gs.view(np.recarray)
 
 
-def load_gs_ply(path, T=None):
+def load_gs_ply(path, T=None, cancel_check=None, chunk_rows=65536):
     try:
-        data = _load_binary_little_endian_ply(path)
-        points = np.vstack((data['x'], data['y'], data['z'])).T
-        return _make_gs_from_arrays(points, data)
+        data = _load_binary_little_endian_ply(path, cancel_check)
+        return _make_gs_from_arrays(
+            None,
+            data,
+            cancel_check=cancel_check,
+            chunk_rows=chunk_rows,
+        )
+    except InterruptedError:
+        raise
     except Exception as e:
         if str(e).startswith(("Truncated PLY", "Invalid PLY")):
             raise
         print(f"[load_gs_ply] Fast loader fallback to meshio: {e}")
 
+    _check_cancel(cancel_check)
     import meshio
     mesh = meshio.read(path)
+    _check_cancel(cancel_check)
     data = dict(mesh.point_data)
-    return _make_gs_from_arrays(mesh.points, data)
+    return _make_gs_from_arrays(
+        mesh.points,
+        data,
+        cancel_check=cancel_check,
+        chunk_rows=chunk_rows,
+    )
 
 
 def rotate_gaussian(T, gs):

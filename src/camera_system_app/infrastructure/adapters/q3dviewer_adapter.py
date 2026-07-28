@@ -6,7 +6,7 @@ import os
 import sys
 from math import pi
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 from PySide6.QtCore import QObject, QTimer, Signal
@@ -29,9 +29,15 @@ def prepare_q3dviewer(project_root: Path) -> Path:
     return root
 
 
-def load_gaussian_ply(path: Path, project_root: Path):
+def load_gaussian_ply(
+    path: Path,
+    project_root: Path,
+    cancel_check: Callable[[], bool] | None = None,
+):
     """Load and validate one local 3DGS PLY without creating a Qt widget."""
 
+    if cancel_check is not None and cancel_check():
+        raise InterruptedError("Gaussian PLY loading cancelled")
     local_path = Path(path).expanduser().resolve()
     if not local_path.exists():
         raise ViewerLoadError("结果文件不存在：{}".format(local_path))
@@ -43,7 +49,12 @@ def load_gaussian_ply(path: Path, project_root: Path):
     try:
         from q3dviewer.utils.cloud_io import load_gs_ply
 
-        gaussians = load_gs_ply(str(local_path))
+        gaussians = load_gs_ply(
+            str(local_path),
+            cancel_check=cancel_check,
+        )
+    except InterruptedError:
+        raise
     except Exception as exc:
         raise ViewerLoadError(
             "PLY 格式错误或 Gaussian 数据加载失败：{}".format(exc)
@@ -59,8 +70,11 @@ def load_gaussian_ply(path: Path, project_root: Path):
     if gaussians.shape[0] == 0:
         raise ViewerLoadError("PLY 不包含任何 Gaussian 点")
     flat = gaussians.view(np.float32).reshape(gaussians.shape[0], -1)
-    if not np.isfinite(flat).all():
-        raise ViewerLoadError("PLY 包含无效的 NaN 或无穷数值")
+    for start in range(0, flat.shape[0], 65536):
+        if cancel_check is not None and cancel_check():
+            raise InterruptedError("Gaussian PLY loading cancelled")
+        if not np.isfinite(flat[start : start + 65536]).all():
+            raise ViewerLoadError("PLY 包含无效的 NaN 或无穷数值")
     return gaussians
 
 
@@ -76,10 +90,18 @@ class Q3DViewerAdapter(QObject):
         from q3dviewer.glwidget import GLWidget
 
         self.widget = GLWidget()
+        # A result-view click must only focus the widget. Depth picking reads
+        # back the framebuffer and recenters the camera, which looks like an
+        # unexpected zoom and is too costly for large Gaussian models.
+        self.widget.enable_depth_picking = False
         self.widget.setMinimumSize(480, 320)
         self.widget.set_color(np.array([0.04, 0.08, 0.11, 1.0], dtype=np.float32))
         self.widget.initialization_failed.connect(self.rendering_failed.emit)
-        self.item = GaussianItem(sort_enabled=True, sort_backend="opengl")
+        self.item = GaussianItem(
+            sort_enabled=True,
+            sort_backend="opengl",
+            sort_min_interval=0.10,
+        )
         self.widget.add_item_with_name("gaussian", self.item)
         self._default_center = np.zeros(3, dtype=np.float64)
         self._default_distance = 4.0
@@ -96,7 +118,7 @@ class Q3DViewerAdapter(QObject):
         """Upload CPU Gaussian data on the GUI thread and fit the camera."""
 
         gs_data = gaussians.view(np.float32).reshape(gaussians.shape[0], -1)
-        self.item.set_data(gs_data=gs_data)
+        self.item.set_data(gs_data=gs_data, validated=True)
         if bounds is None:
             points = np.asarray(gaussians["pw"], dtype=np.float32)
             lo = np.percentile(points, 1, axis=0)
@@ -142,6 +164,20 @@ class Q3DViewerAdapter(QObject):
         )
         self.item.request_sort()
         self.widget.update()
+
+    def performance_metrics(self) -> dict[str, Any]:
+        """Renderer timing plus Jetson unified-memory availability."""
+        metrics = dict(self.item.performance_metrics())
+        try:
+            for line in Path("/proc/meminfo").read_text().splitlines():
+                if line.startswith("MemAvailable:"):
+                    metrics["unified_memory_available_bytes"] = (
+                        int(line.split()[1]) * 1024
+                    )
+                    break
+        except (OSError, ValueError, IndexError):
+            pass
+        return metrics
 
     def release(self) -> None:
         if self._released:

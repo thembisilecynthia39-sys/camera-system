@@ -22,6 +22,8 @@ class ViewerBindings(QObject):
         self.project_root = Path(project_root)
         self._adapter = None
         self._worker = None
+        self._capture_adapter = None
+        self._pending_open_path: str | None = None
         self._logger = logging.getLogger("camera_system_app.ui.viewer")
         window.result_page.open_local_result_requested.connect(self.open_result)
         window.result_page.select_local_result_requested.connect(
@@ -30,8 +32,21 @@ class ViewerBindings(QObject):
         window.result_page.reset_view_requested.connect(self.reset_view)
         window.navigation.currentRowChanged.connect(self._on_page_changed)
 
+    def set_capture_adapter(self, adapter) -> None:
+        self._capture_adapter = adapter
+        adapter.gpu_resources_ready.connect(self._on_gpu_resources_ready)
+
     def open_result(self, path: str) -> None:
         if self._worker is not None:
+            return
+        if (
+            self._capture_adapter is not None
+            and not self._capture_adapter.result_review_gpu_ready
+        ):
+            self._pending_open_path = path
+            self.window.statusBar().showMessage(
+                "● 正在停止推理并释放 GPU，完成后自动加载 3DGS…"
+            )
             return
         try:
             # Import q3dviewer/Qt classes on the GUI thread. The worker only
@@ -48,6 +63,18 @@ class ViewerBindings(QObject):
         worker.finished.connect(lambda current=worker: self._on_finished(current))
         self._worker = worker
         worker.start()
+
+    def _on_gpu_resources_ready(self, ready: bool) -> None:
+        if self._adapter is not None:
+            self._adapter.set_active(
+                ready
+                and self.window.stack.currentWidget()
+                is self.window.result_page
+            )
+        if ready and self._pending_open_path is not None:
+            path = self._pending_open_path
+            self._pending_open_path = None
+            self.open_result(path)
 
     def reset_view(self) -> None:
         if self._adapter is not None:
@@ -113,4 +140,10 @@ class ViewerBindings(QObject):
             if 0 <= index < len(self.window.pages)
             else None
         )
-        self._adapter.set_active(active_page is self.window.result_page)
+        gpu_ready = (
+            self._capture_adapter is None
+            or self._capture_adapter.result_review_gpu_ready
+        )
+        self._adapter.set_active(
+            active_page is self.window.result_page and gpu_ready
+        )

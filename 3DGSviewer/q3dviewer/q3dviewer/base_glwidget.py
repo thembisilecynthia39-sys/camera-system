@@ -8,7 +8,7 @@ from math import radians, tan
 import numpy as np
 from q3dviewer.Qt import QtCore, QtGui
 from q3dviewer.utils.maths import frustum, euler_to_matrix, makeT
-from q3dviewer.Qt.QtWidgets import QOpenGLWidget
+from q3dviewer.Qt.QtWidgets import QApplication, QOpenGLWidget
 
 
 class BaseGLWidget(QOpenGLWidget):
@@ -39,6 +39,9 @@ class BaseGLWidget(QOpenGLWidget):
         self._context_cleanup_connected = False
         self._interacting = False
         self._mouse_interacting = False
+        self._drag_started = False
+        self._drag_start_pos = None
+        self._drag_threshold = max(4, QApplication.startDragDistance())
         self._interaction_timer = QtCore.QTimer(self)
         self._interaction_timer.setSingleShot(True)
         self._interaction_timer.setInterval(180)
@@ -147,9 +150,13 @@ class BaseGLWidget(QOpenGLWidget):
 
     def mouseReleaseEvent(self, ev):
         self._mouse_interacting = False
+        had_drag = self._drag_started
+        self._drag_started = False
+        self._drag_start_pos = None
         if hasattr(self, 'mousePos'):
             delattr(self, 'mousePos')
-        self._schedule_interaction_finish()
+        if had_drag:
+            self._schedule_interaction_finish()
         super().mouseReleaseEvent(ev)
 
     def mousePressEvent(self, ev):
@@ -158,6 +165,8 @@ class BaseGLWidget(QOpenGLWidget):
             QtCore.Qt.MouseButton.RightButton,
         )
         self.mousePos = ev.localPos()
+        self._drag_start_pos = ev.localPos()
+        self._drag_started = False
         super().mousePressEvent(ev)
 
     def set_dist(self, dist):
@@ -214,6 +223,18 @@ class BaseGLWidget(QOpenGLWidget):
             QtCore.Qt.MouseButton.RightButton,
         ):
             return
+        if not self._drag_started:
+            start = self._drag_start_pos
+            if start is None:
+                start = lpos
+                self._drag_start_pos = start
+            total = lpos - start
+            if abs(total.x()) + abs(total.y()) < self._drag_threshold:
+                return
+            self._drag_started = True
+            # Apply the full displacement once the gesture crosses the
+            # threshold; click jitter before that point changes no camera state.
+            diff = total
         if diff.x() == 0 and diff.y() == 0:
             return
         # A press/release is only a click. Enter the reduced-cost interaction

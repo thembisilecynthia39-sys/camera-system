@@ -23,14 +23,30 @@ class ViewerLoadWorker(QThread):
         if self.isInterruptionRequested():
             return
         try:
-            data = load_gaussian_ply(Path(self.path), self.project_root)
+            data = load_gaussian_ply(
+                Path(self.path),
+                self.project_root,
+                cancel_check=self.isInterruptionRequested,
+            )
             if self.isInterruptionRequested():
                 return
             points = np.asarray(data["pw"], dtype=np.float32)
+            if points.shape[0] > 200000:
+                indices = np.linspace(
+                    0,
+                    points.shape[0] - 1,
+                    200000,
+                    dtype=np.int64,
+                )
+                points = points[indices]
+            if self.isInterruptionRequested():
+                return
             bounds = (
                 np.percentile(points, 1, axis=0),
                 np.percentile(points, 99, axis=0),
             )
+        except InterruptedError:
+            return
         except Exception as exc:
             self.failed.emit(str(exc))
             return

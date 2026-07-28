@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 import numpy as np
-from PySide6.QtCore import QPoint, Qt
+from PySide6.QtCore import QPoint, QPointF, Qt
 from PySide6.QtTest import QTest
 
 from camera_system_app.infrastructure.adapters.q3dviewer_adapter import (
@@ -18,12 +18,14 @@ from camera_system_app.infrastructure.adapters.q3dviewer_adapter import (
     prepare_q3dviewer,
 )
 from camera_system_app.ui.pages import ResultViewerPage
+from camera_system_app.workers import viewer_load_worker as viewer_worker_module
+from camera_system_app.workers.viewer_load_worker import ViewerLoadWorker
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
-def _write_minimal_gaussian_ply(path: Path) -> None:
+def _write_minimal_gaussian_ply(path: Path, vertex_count: int = 1) -> None:
     properties = (
         "x",
         "y",
@@ -43,7 +45,7 @@ def _write_minimal_gaussian_ply(path: Path) -> None:
     header = [
         "ply",
         "format binary_little_endian 1.0",
-        "element vertex 1",
+        f"element vertex {vertex_count}",
         *("property float {}".format(name) for name in properties),
         "end_header",
         "",
@@ -64,7 +66,10 @@ def _write_minimal_gaussian_ply(path: Path) -> None:
         0.0,
         0.0,
     )
-    path.write_bytes("\n".join(header).encode("ascii") + struct.pack("<14f", *values))
+    path.write_bytes(
+        "\n".join(header).encode("ascii")
+        + struct.pack("<14f", *values) * vertex_count
+    )
 
 
 def test_minimal_gaussian_ply_loads_in_main_environment(tmp_path):
@@ -100,6 +105,91 @@ def test_truncated_binary_ply_is_rejected(tmp_path):
 
     with pytest.raises(ViewerLoadError, match="Truncated PLY"):
         load_gaussian_ply(path, PROJECT_ROOT)
+
+
+def test_binary_gaussian_conversion_checks_cancellation_between_chunks(
+    monkeypatch, tmp_path
+):
+    path = tmp_path / "large.ply"
+    _write_minimal_gaussian_ply(path, vertex_count=3)
+    prepare_q3dviewer(PROJECT_ROOT)
+    import q3dviewer.utils.cloud_io as cloud_io
+
+    cancelled = False
+    original_exp = cloud_io.np.exp
+
+    def cancel_after_first_scale_conversion(values):
+        nonlocal cancelled
+        result = original_exp(values)
+        cancelled = True
+        return result
+
+    monkeypatch.setattr(
+        cloud_io.np,
+        "exp",
+        cancel_after_first_scale_conversion,
+    )
+
+    with pytest.raises(InterruptedError, match="cancel"):
+        cloud_io.load_gs_ply(
+            str(path),
+            cancel_check=lambda: cancelled,
+            chunk_rows=1,
+        )
+
+
+def test_application_loader_forwards_cancellation_to_q3dviewer(
+    monkeypatch, tmp_path
+):
+    path = tmp_path / "3DGS.ply"
+    _write_minimal_gaussian_ply(path)
+    prepare_q3dviewer(PROJECT_ROOT)
+    import q3dviewer.utils.cloud_io as cloud_io
+
+    def cancelled_loader(_path, _transform=None, *, cancel_check=None, **_kwargs):
+        assert cancel_check is not None
+        assert cancel_check()
+        raise InterruptedError("Gaussian PLY loading cancelled")
+
+    monkeypatch.setattr(cloud_io, "load_gs_ply", cancelled_loader)
+
+    with pytest.raises(InterruptedError, match="cancel"):
+        load_gaussian_ply(
+            path,
+            PROJECT_ROOT,
+            cancel_check=lambda: True,
+        )
+
+
+def test_viewer_worker_suppresses_interrupted_load_signals(
+    qapp, monkeypatch, tmp_path
+):
+    path = tmp_path / "3DGS.ply"
+    _write_minimal_gaussian_ply(path)
+    worker = ViewerLoadWorker(str(path), PROJECT_ROOT)
+    loaded = []
+    failed = []
+
+    def interrupted_loader(_path, _project_root, *, cancel_check=None):
+        assert cancel_check is not None
+        worker.requestInterruption()
+        assert cancel_check()
+        raise InterruptedError("Gaussian PLY loading cancelled")
+
+    monkeypatch.setattr(
+        viewer_worker_module,
+        "load_gaussian_ply",
+        interrupted_loader,
+    )
+    worker.loaded.connect(lambda *args: loaded.append(args))
+    worker.failed.connect(failed.append)
+
+    worker.start()
+    assert worker.wait(3000)
+    qapp.processEvents()
+
+    assert loaded == []
+    assert failed == []
 
 
 def test_result_page_without_file_remains_usable(qapp, tmp_path):
@@ -159,6 +249,44 @@ def test_plain_left_click_does_not_start_gpu_interaction(qapp):
     widget.deleteLater()
 
 
+def test_left_click_jitter_below_drag_threshold_changes_no_camera_state(qapp):
+    prepare_q3dviewer(PROJECT_ROOT)
+    from q3dviewer.base_glwidget import BaseGLWidget
+
+    class _MoveEvent:
+        def localPos(self):
+            return QPointF(22, 21)
+
+        def buttons(self):
+            return Qt.MouseButton.LeftButton
+
+        def modifiers(self):
+            return Qt.KeyboardModifier.NoModifier
+
+    widget = BaseGLWidget()
+    started = []
+    widget.interaction_started.connect(lambda: started.append(True))
+    center = widget.center.copy()
+
+    QTest.mousePress(
+        widget,
+        Qt.MouseButton.LeftButton,
+        pos=QPoint(20, 20),
+    )
+    widget.mouseMoveEvent(_MoveEvent())
+    QTest.mouseRelease(
+        widget,
+        Qt.MouseButton.LeftButton,
+        pos=QPoint(22, 21),
+    )
+    qapp.processEvents()
+
+    assert started == []
+    assert np.array_equal(widget.center, center)
+    assert widget.dist == pytest.approx(40.0)
+    widget.deleteLater()
+
+
 def test_gaussian_interaction_preview_suspends_sort_until_release():
     prepare_q3dviewer(PROJECT_ROOT)
     from q3dviewer.custom_items.gaussian_item import GaussianItem
@@ -177,10 +305,56 @@ def test_gaussian_interaction_preview_suspends_sort_until_release():
     assert np.array_equal(item.prev_Rz, previous_direction)
 
 
+def test_interaction_preview_keeps_full_sh_storage_stride(monkeypatch):
+    prepare_q3dviewer(PROJECT_ROOT)
+    import q3dviewer.custom_items.gaussian_item as gaussian_module
+
+    item = gaussian_module.GaussianItem(
+        sort_enabled=False,
+        sort_backend="opengl",
+    )
+    item.gs_data = np.zeros((2, 59), dtype=np.float32)
+    item.sh_dim = 48
+    item.view_matrix = np.eye(4, dtype=np.float32)
+    item.interactive_preview = True
+    item.interactive_max_gaussians = 2
+    item._preview_count = 2
+    item.prep_program = 7
+    item.ssbo_preview_gi = 11
+    uniforms = {}
+
+    monkeypatch.setattr(gaussian_module, "glUseProgram", lambda _program: None)
+    monkeypatch.setattr(
+        gaussian_module,
+        "set_uniform",
+        lambda _program, value, name: uniforms.__setitem__(name, value),
+    )
+    monkeypatch.setattr(
+        gaussian_module,
+        "glBindBufferBase",
+        lambda _target, _binding, _buffer: None,
+    )
+    monkeypatch.setattr(
+        gaussian_module,
+        "raw_glDispatchCompute",
+        lambda _x, _y, _z: None,
+    )
+    monkeypatch.setattr(
+        gaussian_module,
+        "raw_glMemoryBarrier",
+        lambda _barrier: None,
+    )
+
+    assert item.preprocessGS() == 2
+    assert uniforms["data_sh_dim"] == 48
+    assert uniforms["render_sh_dim"] == 3
+
+
 def test_embedded_viewer_does_not_continuously_render_while_idle(qapp):
     adapter = Q3DViewerAdapter(PROJECT_ROOT)
 
     assert not adapter._timer.isActive()
+    assert not adapter.widget.enable_depth_picking
 
     adapter._begin_interaction()
     assert adapter._timer.isActive()

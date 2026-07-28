@@ -26,6 +26,7 @@ if HARDWARE_GL:
 @pytest.mark.skipif(not HARDWARE_GL, reason="requires the Jetson X11 OpenGL session")
 def test_jetson_core_profile_renders_gaussian_ply(qapp, tmp_path):
     from OpenGL.GL import GL_RENDERER, GL_VERSION, glGetString
+    from PySide6.QtCore import QPoint, QPointF, Qt
     from PySide6.QtTest import QTest
     from PySide6.QtGui import QGuiApplication
 
@@ -74,6 +75,99 @@ def test_jetson_core_profile_renders_gaussian_ply(qapp, tmp_path):
     adapter.widget.show()
     QTest.qWait(800)
     qapp.processEvents()
+    click_center = adapter.widget.center.copy()
+    click_distance = adapter.widget.dist
+    interaction_started = []
+    adapter.widget.interaction_started.connect(
+        lambda: interaction_started.append(True)
+    )
+    QTest.mouseClick(
+        adapter.widget,
+        Qt.MouseButton.LeftButton,
+        pos=adapter.widget.rect().center(),
+    )
+    QTest.qWait(250)
+    qapp.processEvents()
+    assert interaction_started == []
+    assert np.array_equal(adapter.widget.center, click_center)
+    assert adapter.widget.dist == click_distance
+
+    class _DragEvent:
+        def __init__(self, position, button):
+            self._position = QPointF(position)
+            self._button = button
+
+        def localPos(self):
+            return self._position
+
+        def buttons(self):
+            return self._button
+
+        def modifiers(self):
+            return Qt.KeyboardModifier.NoModifier
+
+    drag_origin = adapter.widget.rect().center()
+    left_center = adapter.widget.center.copy()
+    left_euler = adapter.widget.euler.copy()
+    left_distance = adapter.widget.dist
+    QTest.mousePress(
+        adapter.widget,
+        Qt.MouseButton.LeftButton,
+        pos=drag_origin,
+    )
+    adapter.widget.mouseMoveEvent(
+        _DragEvent(drag_origin + QPoint(40, 20), Qt.MouseButton.LeftButton)
+    )
+    QTest.mouseRelease(
+        adapter.widget,
+        Qt.MouseButton.LeftButton,
+        pos=drag_origin + QPoint(40, 20),
+    )
+    QTest.qWait(250)
+    qapp.processEvents()
+    assert not np.array_equal(adapter.widget.center, left_center)
+    assert np.array_equal(adapter.widget.euler, left_euler)
+    assert adapter.widget.dist == left_distance
+    assert not adapter.item.interactive_preview
+
+    right_center = adapter.widget.center.copy()
+    right_euler = adapter.widget.euler.copy()
+    right_distance = adapter.widget.dist
+    QTest.mousePress(
+        adapter.widget,
+        Qt.MouseButton.RightButton,
+        pos=drag_origin,
+    )
+    adapter.widget.mouseMoveEvent(
+        _DragEvent(drag_origin + QPoint(35, 15), Qt.MouseButton.RightButton)
+    )
+    QTest.mouseRelease(
+        adapter.widget,
+        Qt.MouseButton.RightButton,
+        pos=drag_origin + QPoint(35, 15),
+    )
+    QTest.qWait(250)
+    qapp.processEvents()
+    assert np.array_equal(adapter.widget.center, right_center)
+    assert not np.array_equal(adapter.widget.euler, right_euler)
+    assert adapter.widget.dist == right_distance
+    assert not adapter.item.interactive_preview
+
+    class _WheelEvent:
+        def angleDelta(self):
+            return QPoint(0, 120)
+
+    wheel_center = adapter.widget.center.copy()
+    wheel_euler = adapter.widget.euler.copy()
+    wheel_distance = adapter.widget.dist
+    adapter.widget.wheelEvent(_WheelEvent())
+    QTest.qWait(250)
+    qapp.processEvents()
+    assert np.array_equal(adapter.widget.center, wheel_center)
+    assert np.array_equal(adapter.widget.euler, wheel_euler)
+    assert adapter.widget.dist < wheel_distance
+    assert not adapter.item.interactive_preview
+
     projection = adapter.widget.projection_matrix.copy()
     adapter.widget.update_dist(0.5)
     QTest.qWait(100)
