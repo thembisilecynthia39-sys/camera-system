@@ -9,6 +9,7 @@ from tx_rx.jetson_client.task_manifest import (
     CaptureDataError,
     InvalidImageCountError,
     MissingCaptureFileError,
+    TaskPackageError,
     build_configured_task_package,
     build_task_package,
     load_staged_task_package,
@@ -292,3 +293,21 @@ def test_staged_package_can_be_revalidated_for_future_upload(tmp_path):
 
     assert loaded.staging_dir == result.staging_dir
     assert loaded.checksum == result.checksum
+
+
+def test_cancelled_package_removes_temporary_staging_directory(tmp_path):
+    capture = _create_capture(tmp_path / "input")
+    staging_root = tmp_path / "staging"
+
+    def cancel_after_temporary_directory_exists():
+        return bool(list(staging_root.glob(".capture_001-*")))
+
+    with pytest.raises(TaskPackageError, match="task packaging cancelled"):
+        build_task_package(
+            capture,
+            staging_root,
+            cancel_check=cancel_after_temporary_directory_exists,
+        )
+
+    assert not (staging_root / "capture_001").exists()
+    assert list(staging_root.glob(".capture_001-*")) == []

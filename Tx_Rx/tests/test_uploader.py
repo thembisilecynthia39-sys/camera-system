@@ -127,6 +127,51 @@ def test_health_timeout_checks_cancellation_between_short_attempts(tmp_path):
     assert session.calls == 1
 
 
+def test_staged_upload_honors_cancellation_before_network(tmp_path):
+    staging_dir = _task(tmp_path / "staging")
+    config = _config(tmp_path / "config.yaml", tmp_path / "staging")
+    session = _Session()
+
+    with pytest.raises(TaskUploadError, match="upload cancelled"):
+        upload_staged_task(
+            staging_dir,
+            config,
+            session,
+            cancel_check=lambda: True,
+        )
+
+    assert session.calls == []
+
+
+def test_staged_upload_honors_cancellation_before_reconstruction(tmp_path):
+    staging_dir = _task(tmp_path / "staging")
+    config = _config(tmp_path / "config.yaml", tmp_path / "staging")
+    cancelled = False
+
+    class CancelAfterUploadSession(_Session):
+        def post(self, url, **kwargs):
+            nonlocal cancelled
+            response = super().post(url, **kwargs)
+            if url.endswith("/upload"):
+                cancelled = True
+            return response
+
+    session = CancelAfterUploadSession()
+
+    with pytest.raises(TaskUploadError, match="upload cancelled"):
+        upload_staged_task(
+            staging_dir,
+            config,
+            session,
+            cancel_check=lambda: cancelled,
+        )
+
+    assert [(method, url) for method, url, _ in session.calls] == [
+        ("GET", "http://wsl-host:8000/health"),
+        ("POST", "http://wsl-host:8000/upload"),
+    ]
+
+
 def test_uploader_accepts_duplicate_task_that_is_already_finished(tmp_path):
     staging_dir = _task(tmp_path / "staging")
     config = _config(tmp_path / "config.yaml", tmp_path / "staging")

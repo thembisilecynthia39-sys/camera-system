@@ -288,9 +288,16 @@ class ReconstructionWorkflow:
             stage_message="生成 task.json 并打包任务",
         )
         package = (
-            load_staged_task_package(job.staging_dir)
+            load_staged_task_package(
+                job.staging_dir,
+                cancel_check=cancel_check,
+            )
             if job.staging_dir
-            else build_task_package(job.capture_dir, config.staging_root)
+            else build_task_package(
+                job.capture_dir,
+                config.staging_root,
+                cancel_check=cancel_check,
+            )
         )
         job = self._update(
             job,
@@ -411,7 +418,13 @@ class ReconstructionWorkflow:
             stage_message="下载 3DGS.ply 到 Jetson 临时文件",
             reconstruction_progress=100.0,
         )
-        metadata = get_ply_metadata(task_id, package.capture_id, config, client)
+        metadata = get_ply_metadata(
+            task_id,
+            package.capture_id,
+            config,
+            client,
+            cancel_check,
+        )
         last_download_persist = 0.0
 
         def on_download(message: str) -> None:
@@ -457,7 +470,13 @@ class ReconstructionWorkflow:
             state=ReconstructionState.ACKNOWLEDGING,
             stage_message="确认结果接收",
         )
-        acknowledge_result(metadata, final_path, config, client)
+        acknowledge_result(
+            metadata,
+            final_path,
+            config,
+            client,
+            cancel_check,
+        )
         job = self._update(
             job,
             job_callback,

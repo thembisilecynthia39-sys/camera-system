@@ -128,11 +128,13 @@ def request_reconstruction(
     task_id: str,
     config: TxRxConfig,
     session: Optional[Any] = None,
+    cancel_check: Optional[CancelCheck] = None,
 ) -> ReconstructResponse:
     """Ask the remote service to start reconstruction for an uploaded task."""
 
     client = session or direct_session()
     try:
+        _check_cancel(cancel_check)
         response = client.post(
             f"{config.server_url}/reconstruct",
             json={"task_id": task_id},
@@ -153,25 +155,41 @@ def upload_staged_task(
     staging_dir: Path,
     config_path: Optional[Path] = None,
     session: Optional[Any] = None,
+    progress_callback: Optional[UploadProgressCallback] = None,
+    cancel_check: Optional[CancelCheck] = None,
 ) -> TaskUploadResult:
     """Validate, upload, and request reconstruction for one staging task."""
 
-    package = load_staged_task_package(staging_dir)
+    _check_cancel(cancel_check)
+    package = load_staged_task_package(
+        staging_dir,
+        cancel_check=cancel_check,
+    )
+    _check_cancel(cancel_check)
     config = load_config(config_path)
     client = session or direct_session()
-    archive_path: Optional[Path] = None
     try:
-        check_health(config, client)
-        upload_response = upload_task_package(package, config, client)
+        check_health(config, client, cancel_check=cancel_check)
+        upload_response = upload_task_package(
+            package,
+            config,
+            client,
+            progress_callback=progress_callback,
+            cancel_check=cancel_check,
+        )
         task_id = upload_response.task_id
-        reconstruct_response = request_reconstruction(package, task_id, config, client)
+        _check_cancel(cancel_check)
+        reconstruct_response = request_reconstruction(
+            package,
+            task_id,
+            config,
+            client,
+            cancel_check=cancel_check,
+        )
     except TaskUploadError:
         raise
     except (OSError, ValueError, requests.RequestException) as exc:
         raise TaskUploadError(f"staging task {staging_dir}: upload failed: {exc}") from exc
-    finally:
-        if archive_path is not None:
-            archive_path.unlink(missing_ok=True)
     logger.info("Uploaded staged task %s as %s", staging_dir, task_id)
     return TaskUploadResult(
         task_id,

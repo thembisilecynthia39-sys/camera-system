@@ -198,7 +198,13 @@ class TxRxTransferAdapter:
             from tx_rx.jetson_client.transfer import download_ply, get_ply_metadata
 
             config = load_config(config_path)
-            metadata = get_ply_metadata(task.task_id, task.capture_id, config, session)
+            metadata = get_ply_metadata(
+                task.task_id,
+                task.capture_id,
+                config,
+                session,
+                cancel_check,
+            )
             path = download_ply(metadata, config, session, cancel_check, progress_callback)
         except Exception as exc:
             raise make_service_error(

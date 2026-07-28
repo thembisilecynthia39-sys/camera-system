@@ -12,7 +12,7 @@ import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Callable, Dict, List, Optional, Sequence
 
 from pydantic import ValidationError
 
@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 _REQUIRED_CAPTURE_FILES = ("metadata.csv", "quality.csv", "cameras.json")
 _SCHEMA_VERSION = "1.0"
 _JPEG_SUFFIXES = {".jpg", ".jpeg"}
+CancelCheck = Callable[[], bool]
 
 
 class TaskPackageError(Exception):
@@ -61,15 +62,19 @@ class _CaptureImageRecord:
     frame_id: str
 
 
-def prepare_manual_task(task_dir: Path) -> TaskPackageResult:
+def prepare_manual_task(
+    task_dir: Path,
+    cancel_check: Optional[CancelCheck] = None,
+) -> TaskPackageResult:
     """Complete a manual task containing only ``images/0.jpg`` through ``7.jpg``."""
 
     task_dir = Path(task_dir)
+    _check_cancel(cancel_check)
     task_id = task_dir.name or str(task_dir)
     if not task_dir.is_dir():
         raise MissingCaptureFileError(f"manual task {task_id}: directory does not exist: {task_dir}")
     if (task_dir / "task.json").exists():
-        return load_staged_task_package(task_dir)
+        return load_staged_task_package(task_dir, cancel_check=cancel_check)
 
     images_dir = task_dir / "images"
     if not images_dir.is_dir():
@@ -83,6 +88,7 @@ def prepare_manual_task(task_dir: Path) -> TaskPackageResult:
 
     image_models: List[TaskImage] = []
     for index, angle in enumerate(TASK_ANGLES):
+        _check_cancel(cancel_check)
         path = images_dir / f"{index}.jpg"
         if path.stat().st_size <= 0:
             raise CaptureDataError(f"manual task {task_id}: image is empty: {path}")
@@ -92,7 +98,7 @@ def prepare_manual_task(task_dir: Path) -> TaskPackageResult:
                 angle=angle,
                 filename=path.name,
                 source_filename=path.name,
-                sha256=_sha256_file(path),
+                sha256=_sha256_file(path, cancel_check),
                 size_bytes=path.stat().st_size,
             )
         )
@@ -116,7 +122,11 @@ def prepare_manual_task(task_dir: Path) -> TaskPackageResult:
     metadata_path = task_dir / "metadata.json"
     _atomic_write_json(metadata_path, metadata_payload, task_id)
     included_paths = [metadata_path, *(images_dir / f"{index}.jpg" for index in range(8))]
-    task_files = _describe_files(task_dir, included_paths)
+    task_files = _describe_files(
+        task_dir,
+        included_paths,
+        cancel_check=cancel_check,
+    )
     checksum = _task_checksum(task_files)
     manifest = TaskManifest(
         schema_version=_SCHEMA_VERSION,
@@ -137,24 +147,38 @@ def build_configured_task_package(
     capture_dir: Path,
     config_path: Optional[Path] = None,
     selected_images: Optional[Sequence[str]] = None,
+    cancel_check: Optional[CancelCheck] = None,
 ) -> TaskPackageResult:
     """Build a package in the staging root fixed by ``config.yaml``."""
 
     config = load_config(config_path)
-    return build_task_package(capture_dir, config.staging_root, selected_images)
+    return build_task_package(
+        capture_dir,
+        config.staging_root,
+        selected_images,
+        cancel_check=cancel_check,
+    )
 
 
-def load_staged_task_package(staging_dir: Path) -> TaskPackageResult:
+def load_staged_task_package(
+    staging_dir: Path,
+    cancel_check: Optional[CancelCheck] = None,
+) -> TaskPackageResult:
     """Validate and open a completed staging directory for future upload."""
 
     staging_dir = Path(staging_dir)
-    return _load_existing_package(staging_dir, staging_dir.name or str(staging_dir))
+    return _load_existing_package(
+        staging_dir,
+        staging_dir.name or str(staging_dir),
+        cancel_check=cancel_check,
+    )
 
 
 def build_task_package(
     capture_dir: Path,
     output_root: Path,
     selected_images: Optional[Sequence[str]] = None,
+    cancel_check: Optional[CancelCheck] = None,
 ) -> TaskPackageResult:
     """Create or return a validated staging package derived from ``capture_dir``.
 
@@ -166,12 +190,17 @@ def build_task_package(
 
     capture_dir = Path(capture_dir)
     output_root = Path(output_root)
+    _check_cancel(cancel_check)
     capture_id = capture_dir.name or str(capture_dir)
     images_source_dir = _validate_capture_layout(capture_dir, capture_id)
 
     staging_dir = output_root / capture_id
     if staging_dir.exists():
-        return _load_existing_package(staging_dir, capture_id)
+        return _load_existing_package(
+            staging_dir,
+            capture_id,
+            cancel_check=cancel_check,
+        )
 
     records = _read_task_records(
         capture_dir / "metadata.csv", images_source_dir, capture_id, selected_images
@@ -180,33 +209,46 @@ def build_task_package(
     temporary_dir = Path(tempfile.mkdtemp(prefix=f".{capture_id}-", dir=str(output_root)))
 
     try:
+        _check_cancel(cancel_check)
         images_dir = temporary_dir / "images"
         images_dir.mkdir()
         image_models: List[TaskImage] = []
 
         for index, record in enumerate(records):
+            _check_cancel(cancel_check)
             source_path = images_source_dir / record.source_filename
             if not source_path.is_file():
                 raise MissingCaptureFileError(
                     f"capture {capture_id}: source image does not exist: {source_path}"
                 )
             destination = images_dir / f"{index}.jpg"
-            _copy_capture_file(source_path, destination, capture_id)
+            _copy_capture_file(
+                source_path,
+                destination,
+                capture_id,
+                cancel_check=cancel_check,
+            )
             image_models.append(
                 TaskImage(
                     index=index,
                     angle=record.angle,
                     filename=destination.name,
                     source_filename=record.source_filename,
-                    sha256=_sha256_file(destination),
+                    sha256=_sha256_file(destination, cancel_check),
                     size_bytes=destination.stat().st_size,
                 )
             )
 
         for filename in _REQUIRED_CAPTURE_FILES:
+            _check_cancel(cancel_check)
             source = capture_dir / filename
             if source.is_file():
-                _copy_capture_file(source, temporary_dir / filename, capture_id)
+                _copy_capture_file(
+                    source,
+                    temporary_dir / filename,
+                    capture_id,
+                    cancel_check=cancel_check,
+                )
 
         metadata_payload: Dict[str, Any] = {
             "schema_version": _SCHEMA_VERSION,
@@ -228,7 +270,11 @@ def build_task_package(
         _atomic_write_json(metadata_json_path, metadata_payload, capture_id)
 
         included_paths = [path for path in temporary_dir.rglob("*") if path.is_file()]
-        task_files = _describe_files(temporary_dir, included_paths)
+        task_files = _describe_files(
+            temporary_dir,
+            included_paths,
+            cancel_check=cancel_check,
+        )
         checksum = _task_checksum(task_files)
         manifest = TaskManifest(
             schema_version=_SCHEMA_VERSION,
@@ -246,6 +292,7 @@ def build_task_package(
             capture_id,
         )
 
+        _check_cancel(cancel_check)
         os.replace(str(temporary_dir), str(staging_dir))
         logger.info("Created task package %s at %s", capture_id, staging_dir)
         return _result_from_manifest(staging_dir, manifest)
@@ -367,9 +414,24 @@ def _read_task_records(
     return records
 
 
-def _copy_capture_file(source: Path, destination: Path, capture_id: str) -> None:
+def _copy_capture_file(
+    source: Path,
+    destination: Path,
+    capture_id: str,
+    cancel_check: Optional[CancelCheck] = None,
+) -> None:
     try:
-        shutil.copy2(source, destination)
+        with source.open("rb") as input_stream, destination.open("wb") as output_stream:
+            while True:
+                _check_cancel(cancel_check)
+                chunk = input_stream.read(1024 * 1024)
+                if not chunk:
+                    break
+                output_stream.write(chunk)
+        shutil.copystat(source, destination)
+    except TaskPackageError:
+        destination.unlink(missing_ok=True)
+        raise
     except OSError as exc:
         raise TaskPackageError(
             f"capture {capture_id}: failed to copy {source} to {destination}: {exc}"
@@ -393,23 +455,40 @@ def _atomic_write_json(path: Path, payload: Dict[str, Any], capture_id: str) -> 
         raise TaskPackageError(f"capture {capture_id}: failed to write JSON {path}: {exc}") from exc
 
 
-def _sha256_file(path: Path) -> str:
+def _sha256_file(
+    path: Path,
+    cancel_check: Optional[CancelCheck] = None,
+) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+        while True:
+            _check_cancel(cancel_check)
+            chunk = stream.read(1024 * 1024)
+            if not chunk:
+                break
             digest.update(chunk)
     return digest.hexdigest()
 
 
-def _describe_files(root: Path, paths: Sequence[Path]) -> List[TaskFile]:
-    return [
-        TaskFile(
-            relative_path=path.relative_to(root).as_posix(),
-            sha256=_sha256_file(path),
-            size_bytes=path.stat().st_size,
+def _describe_files(
+    root: Path,
+    paths: Sequence[Path],
+    cancel_check: Optional[CancelCheck] = None,
+) -> List[TaskFile]:
+    files = []
+    for path in sorted(
+        paths,
+        key=lambda item: item.relative_to(root).as_posix(),
+    ):
+        _check_cancel(cancel_check)
+        files.append(
+            TaskFile(
+                relative_path=path.relative_to(root).as_posix(),
+                sha256=_sha256_file(path, cancel_check),
+                size_bytes=path.stat().st_size,
+            )
         )
-        for path in sorted(paths, key=lambda item: item.relative_to(root).as_posix())
-    ]
+    return files
 
 
 def _task_checksum(files: Sequence[TaskFile]) -> str:
@@ -419,15 +498,25 @@ def _task_checksum(files: Sequence[TaskFile]) -> str:
     return digest.hexdigest()
 
 
-def _load_existing_package(staging_dir: Path, capture_id: str) -> TaskPackageResult:
+def _load_existing_package(
+    staging_dir: Path,
+    capture_id: str,
+    cancel_check: Optional[CancelCheck] = None,
+) -> TaskPackageResult:
     manifest_path = staging_dir / "task.json"
     try:
+        _check_cancel(cancel_check)
         manifest = TaskManifest.model_validate_json(manifest_path.read_text(encoding="utf-8"))
         if manifest.capture_id != capture_id:
             raise ValueError(f"manifest capture_id is {manifest.capture_id!r}")
         for item in manifest.files:
+            _check_cancel(cancel_check)
             path = staging_dir / item.relative_path
-            if not path.is_file() or path.stat().st_size != item.size_bytes or _sha256_file(path) != item.sha256:
+            if (
+                not path.is_file()
+                or path.stat().st_size != item.size_bytes
+                or _sha256_file(path, cancel_check) != item.sha256
+            ):
                 raise ValueError(f"staged file is missing or changed: {item.relative_path}")
         if _task_checksum(manifest.files) != manifest.checksum:
             raise ValueError("task checksum does not match staged files")
@@ -440,6 +529,11 @@ def _load_existing_package(staging_dir: Path, capture_id: str) -> TaskPackageRes
             f"capture {capture_id}: output directory already exists but is incomplete: {staging_dir}: {exc}"
         ) from exc
     return _result_from_manifest(staging_dir, manifest)
+
+
+def _check_cancel(cancel_check: Optional[CancelCheck]) -> None:
+    if cancel_check is not None and cancel_check():
+        raise TaskPackageError("task packaging cancelled")
 
 
 def _result_from_manifest(staging_dir: Path, manifest: TaskManifest) -> TaskPackageResult:

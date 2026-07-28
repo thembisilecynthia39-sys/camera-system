@@ -93,14 +93,18 @@ def get_ply_metadata(
     capture_id: str,
     config: TxRxConfig,
     session: Optional[Any] = None,
+    cancel_check: Optional[CancelCheck] = None,
 ) -> PlyMetadata:
     """Fetch and strictly validate result metadata."""
 
     client = session or direct_session()
     try:
-        response = client.get(
+        response = _cancellable_request(
+            client,
+            "get",
             f"{config.server_url}/result/{quote(task_id, safe='')}/metadata",
-            timeout=network_timeout(config.request_timeout_seconds),
+            config.request_timeout_seconds,
+            cancel_check,
         )
         response.raise_for_status()
         metadata = PlyMetadata.model_validate(response.json())
@@ -218,9 +222,11 @@ def acknowledge_result(
     final_path: Path,
     config: TxRxConfig,
     session: Optional[Any] = None,
+    cancel_check: Optional[CancelCheck] = None,
 ) -> AckResponse:
     """Acknowledge a completely validated and published PLY result."""
 
+    _check_cancel(cancel_check)
     if not final_path.is_file() or final_path.stat().st_size != metadata.file_size:
         raise TransferError(f"cannot ACK missing or invalid result file: {final_path}")
     payload = {
@@ -235,10 +241,14 @@ def acknowledge_result(
     }
     client = session or direct_session()
     try:
-        response = client.post(
+        response = _cancellable_request(
+            client,
+            "post",
             f"{config.server_url}/result/{quote(metadata.task_id, safe='')}/ack",
+            config.request_timeout_seconds,
+            cancel_check,
             json=payload,
-            timeout=network_timeout(config.request_timeout_seconds),
+            headers={"Idempotency-Key": metadata.task_id},
         )
         response.raise_for_status()
         ack = AckResponse.model_validate(response.json())
@@ -264,17 +274,37 @@ def run_transfer(
     if "127.0.0.1" in config.server_url or "localhost" in config.server_url:
         raise TransferError("server_url must contain the actual WSL IP, not localhost")
     package: TaskPackageResult = build_configured_task_package(
-        capture_dir, config_path, selected_images
+        capture_dir,
+        config_path,
+        selected_images,
+        cancel_check=cancel_check,
     )
     if progress_callback:
         progress_callback(f"capture_id={package.capture_id}")
-    uploaded: TaskUploadResult = upload_staged_task(package.staging_dir, config_path, session)
+    uploaded: TaskUploadResult = upload_staged_task(
+        package.staging_dir,
+        config_path,
+        session,
+        cancel_check=cancel_check,
+    )
     if progress_callback:
         progress_callback(f"task_id={uploaded.task_id} upload_status={uploaded.upload_response.status}")
     poll_status(uploaded.task_id, package.capture_id, config, session, cancel_check, progress_callback)
-    metadata = get_ply_metadata(uploaded.task_id, package.capture_id, config, session)
+    metadata = get_ply_metadata(
+        uploaded.task_id,
+        package.capture_id,
+        config,
+        session,
+        cancel_check,
+    )
     final_path = download_ply(metadata, config, session, cancel_check, progress_callback)
-    ack = acknowledge_result(metadata, final_path, config, session)
+    ack = acknowledge_result(
+        metadata,
+        final_path,
+        config,
+        session,
+        cancel_check,
+    )
     if progress_callback:
         progress_callback(f"final_path={final_path} sha256={metadata.sha256} ack={ack.message_type}")
     return final_path
@@ -321,6 +351,40 @@ def _require_identity(
 def _check_cancel(cancel_check: Optional[CancelCheck]) -> None:
     if cancel_check and cancel_check():
         raise TransferError("transfer cancelled")
+
+
+def _cancellable_request(
+    client: Any,
+    method: str,
+    url: str,
+    timeout_seconds: float,
+    cancel_check: Optional[CancelCheck],
+    **kwargs,
+):
+    """Retry timeout observation windows inside one overall deadline."""
+
+    deadline = time.monotonic() + max(0.1, float(timeout_seconds))
+    request = getattr(client, method)
+    while True:
+        _check_cancel(cancel_check)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise requests.Timeout(
+                f"{method.upper()} {url} exceeded {timeout_seconds}s"
+            )
+        try:
+            return request(
+                url,
+                timeout=network_timeout(
+                    min(1.0, remaining),
+                    read_cap=1.0,
+                ),
+                **kwargs,
+            )
+        except requests.Timeout:
+            _check_cancel(cancel_check)
+            if time.monotonic() >= deadline:
+                raise
 
 
 def _interruptible_wait(seconds: float, cancel_check: Optional[CancelCheck]) -> None:
