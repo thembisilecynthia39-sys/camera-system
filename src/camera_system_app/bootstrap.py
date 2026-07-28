@@ -87,7 +87,7 @@ def run_gui(
     os.environ["Q3D_QT_IMPL"] = "PySide6"
     os.environ.setdefault("QT_OPENGL", "desktop")
 
-    from PySide6.QtCore import QLockFile, QTimer
+    from PySide6.QtCore import QCoreApplication, QEvent, QLockFile, QTimer
     from PySide6.QtGui import QSurfaceFormat
     from PySide6.QtWidgets import QApplication
     from PySide6.QtWidgets import QMessageBox
@@ -233,4 +233,13 @@ def run_gui(
         # direct QApplication.quit() can destroy PyQt5 widgets while the
         # lifecycle event filter is still scheduling its deferred close.
         QTimer.singleShot(max(1, smoke_test_ms), window.close)
-    return int(app.exec())
+    exit_code = int(app.exec())
+
+    # PyQt5 owns the native children while Python still holds composition-root
+    # references.  Delete the complete widget tree while QApplication is
+    # alive so interpreter shutdown cannot choose an unsafe wrapper order.
+    window.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+    app.processEvents()
+    instance_lock.unlock()
+    return exit_code
