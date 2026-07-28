@@ -4,9 +4,14 @@ from pathlib import Path
 import re
 
 from camera_system_app.bootstrap import build_context
+from camera_system_app.domain import ReconstructionJob
 from camera_system_app.ui.design_tokens import SEMANTIC_DARK, SEMANTIC_LIGHT
 from camera_system_app.ui.main_window import MainWindow
-from camera_system_app.ui.pages import ResultViewerPage
+from camera_system_app.ui.pages import (
+    HistoryPage,
+    ResultViewerPage,
+    TransferReconstructionPage,
+)
 from camera_system_app.ui.theme import application_stylesheet
 from camera_system_app.ui.widgets import (
     EmptyState,
@@ -152,3 +157,30 @@ def test_result_viewer_has_actionable_empty_state(qapp, tmp_path):
     assert page._empty_state.isVisibleTo(page)
     assert "Gaussian" in page._empty_state.title_text()
     assert page._empty_state.action_button.text() == "选择本地 PLY"
+
+
+def test_transfer_progress_updates_numbered_workflow_stages(qapp, tmp_path):
+    page = TransferReconstructionPage("http://host:8000", str(tmp_path))
+
+    page.set_upload_progress(50, 100)
+    page.set_reconstruction_progress(33.5, "训练")
+    page.set_download_progress(25, 100)
+
+    assert page._upload_stage.progress.value() == 50
+    assert page._reconstruction_stage.progress.value() == 33
+    assert "训练" in page._reconstruction_stage.accessibleName()
+    assert page._download_stage.progress.value() == 25
+
+
+def test_history_switches_between_empty_state_and_table(qapp, tmp_path):
+    page = HistoryPage()
+
+    assert page._empty_state.isVisibleTo(page)
+    assert not page.table.isVisibleTo(page)
+
+    capture = tmp_path / "capture"
+    capture.mkdir()
+    page.set_jobs([ReconstructionJob("job", "capture", capture)])
+
+    assert page.table.isVisibleTo(page)
+    assert not page._empty_state.isVisibleTo(page)

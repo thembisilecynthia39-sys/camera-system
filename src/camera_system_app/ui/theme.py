@@ -154,6 +154,13 @@ _QSS = Template(
     QLabel#captureEmptyState:focus {
         border: $focus_width solid $dark_focus;
     }
+    QLabel#historyEmptyState {
+        background: $light_surface_subtle;
+        color: $light_text_muted;
+        border: 1px solid $light_border_strong;
+        border-radius: $radius_lg;
+        padding: $space_8;
+    }
 
     QFrame#metricCard {
         background: $light_surface;

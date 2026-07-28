@@ -33,6 +33,7 @@ class HistoryPage(BasePage):
             "历史任务",
             "集中查看采集、上传、重建、下载和结果状态。",
             parent,
+            eyebrow="工作区 · 任务记录",
         )
         summary = QFrame()
         summary.setObjectName("historySummary")
@@ -78,10 +79,24 @@ class HistoryPage(BasePage):
         self.table.setColumnWidth(5, 180)
         self.table.setAccessibleName("历史任务列表")
         self.table.cellDoubleClicked.connect(self._select_row)
+        self._empty_state = QLabel(
+            "<h2>◇ 还没有历史任务</h2>"
+            "<p>完成八视角采集或手动选择照片后，任务会显示在这里。</p>"
+        )
+        self._empty_state.setObjectName("historyEmptyState")
+        self._empty_state.setAlignment(Qt.AlignCenter)
+        self._empty_state.setWordWrap(True)
+        self._empty_state.setAccessibleName(
+            "还没有历史任务。完成八视角采集或手动选择照片后，任务会显示在这里。"
+        )
+        self.layout.addWidget(self._empty_state, 1)
+        self.table.setHidden(True)
         self.layout.addWidget(self.table, 1)
 
     def set_jobs(self, jobs) -> None:
         self._count_label.setText("共 {} 个任务".format(len(jobs)))
+        self._empty_state.setHidden(bool(jobs))
+        self.table.setHidden(not bool(jobs))
         self.table.setRowCount(len(jobs))
         for row, job in enumerate(jobs):
             task_item = self._text_item(job.job_id, job.job_id)
