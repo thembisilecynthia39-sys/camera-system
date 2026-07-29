@@ -3,7 +3,13 @@
 from pathlib import Path
 import re
 
-from PySide6.QtCore import QPoint, QPointF, Qt
+from PySide6.QtCore import (
+    QCoreApplication,
+    QEvent,
+    QPoint,
+    QPointF,
+    Qt,
+)
 from PySide6.QtGui import QPalette, QWheelEvent
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QLabel, QPushButton, QVBoxLayout, QWidget
@@ -70,6 +76,13 @@ def _wheel_up_event():
         Qt.NoScrollPhase,
         False,
     )
+
+
+def _delete_widget(widget, qapp):
+    widget.close()
+    widget.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+    qapp.processEvents()
 
 
 def test_semantic_text_pairs_meet_wcag_contrast():
@@ -198,6 +211,7 @@ def test_numbered_navigation_preserves_page_indexes(
     window.navigation.setCurrentRow(2)
 
     assert window.stack.currentWidget() is window.result_page
+    _delete_widget(window, qapp)
 
 
 def test_brand_title_fits_sidebar_at_minimum_window_size(
@@ -217,7 +231,7 @@ def test_brand_title_fits_sidebar_at_minimum_window_size(
 
         assert brand.width() >= brand.sizeHint().width()
     finally:
-        window.close()
+        _delete_widget(window, qapp)
         qapp.setStyleSheet(previous_stylesheet)
 
 
