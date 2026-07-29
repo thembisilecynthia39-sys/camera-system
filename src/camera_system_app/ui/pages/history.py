@@ -76,7 +76,7 @@ class HistoryPage(BasePage):
         header.setSectionResizeMode(5, QHeaderView.Fixed)
         self.table.setColumnWidth(0, 150)
         self.table.setColumnWidth(1, 150)
-        self.table.setColumnWidth(2, 96)
+        self.table.setColumnWidth(2, 128)
         self.table.setColumnWidth(3, 72)
         self.table.setColumnWidth(5, 152)
         self.table.setAccessibleName("历史任务列表")

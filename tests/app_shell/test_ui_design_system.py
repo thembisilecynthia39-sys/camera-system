@@ -313,6 +313,11 @@ def test_history_native_status_cells_and_actions_show_complete_text(
 
             assert page.table.cellWidget(row, 2) is None
             assert status_item.text() == expected_status
+            assert (
+                page.table.fontMetrics().horizontalAdvance(expected_status)
+                + 32
+                <= page.table.columnWidth(2)
+            )
             assert primary.height() >= primary.sizeHint().height()
     finally:
         page.close()
