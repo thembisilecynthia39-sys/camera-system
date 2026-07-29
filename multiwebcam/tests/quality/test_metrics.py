@@ -66,3 +66,14 @@ def test_evaluate_frame_uses_supplied_object_region():
 
     assert quality.object_region == override
     assert quality.object_score > 0.0
+
+
+def test_downsampled_quality_detection_returns_source_frame_coordinates():
+    frame = np.zeros((720, 1280, 3), dtype=np.uint8)
+    frame[210:510, 440:840] = 255
+
+    quality = evaluate_frame(frame)
+
+    assert quality.object_region is not None
+    assert quality.object_region.x > 400
+    assert quality.object_region.width > 350

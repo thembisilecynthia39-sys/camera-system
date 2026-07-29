@@ -55,11 +55,18 @@ layout (std430, binding=3) buffer GaussianPrep {
 	float gs_prep[];
 };
 
+layout (std430, binding=4) buffer PreviewOrder {
+	uint preview_index[];
+};
+
 uniform mat4 view_matrix;
 uniform mat4 projection_matrix;
 uniform vec2 focal;
-uniform int  sh_dim;
+uniform int  data_sh_dim;
+uniform int  render_sh_dim;
 uniform int  gs_num;
+uniform int  dispatch_num;
+uniform int  preview_mode;
 
 mat3 computeCov3D(vec3 scale, vec4 q)
 {
@@ -139,7 +146,7 @@ vec3 computeColor(int sh_offset, vec3 ray_dir)
 {
 	vec3 c = SH_C0_0 * get_vec3(sh_offset);
 	
-	if (sh_dim > 3)  // 1 * 3
+	if (render_sh_dim > 3)  // 1 * 3
 	{
 		float x = ray_dir.x;
 		float y = ray_dir.y;
@@ -149,7 +156,7 @@ vec3 computeColor(int sh_offset, vec3 ray_dir)
 			SH_C1_1 * z * get_vec3(sh_offset + 2 * 3) +
 			SH_C1_2 * x * get_vec3(sh_offset + 3 * 3);
 
-		if (sh_dim > 12)  // (1 + 3) * 3
+		if (render_sh_dim > 12)  // (1 + 3) * 3
 		{
 			float xx = x * x, yy = y * y, zz = z * z;
 			float xy = x * y, yz = y * z, xz = x * z;
@@ -160,7 +167,7 @@ vec3 computeColor(int sh_offset, vec3 ray_dir)
 				SH_C2_3 * xz * get_vec3(sh_offset + 7 * 3) +
 				SH_C2_4 * (xx - yy) * get_vec3(sh_offset + 8 * 3);
 
-			if (sh_dim > 27)  // (1 + 3 + 5) * 3
+			if (render_sh_dim > 27)  // (1 + 3 + 5) * 3
 			{
 				c = c +
 					SH_C3_0 * y * (3.0f * xx - yy) * get_vec3(sh_offset + 9 * 3) +
@@ -178,12 +185,17 @@ vec3 computeColor(int sh_offset, vec3 ray_dir)
 
 void main() 
 {
-	int gs_id = int(gl_GlobalInvocationID.x);
+	int invocation_id = int(gl_GlobalInvocationID.x);
 
+	if (invocation_id >= dispatch_num)
+		return;
+	int gs_id = preview_mode != 0
+		? int(preview_index[invocation_id])
+		: invocation_id;
 	if (gs_id >= gs_num)
 		return;
 
-	int dim_gs = 3 + 4 + 3 + 1 + sh_dim;
+	int dim_gs = 3 + 4 + 3 + 1 + data_sh_dim;
 	int base_gs = gs_id * dim_gs;
 	int base_prep = DIM_PREP * gs_id;
 	vec4 pw = vec4(get_vec3(base_gs + OFFSET_DATA_POS), 1.f);

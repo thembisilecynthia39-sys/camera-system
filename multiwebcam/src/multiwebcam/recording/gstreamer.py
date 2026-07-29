@@ -2,10 +2,32 @@ from __future__ import annotations
 """GStreamer-based hardware recording helpers for Jetson."""
 
 
+import shutil
+import subprocess
+from functools import lru_cache
 from pathlib import Path
 
 from multiwebcam.profiles.settings import RecordingSettings
 from multiwebcam.sources.gstreamer import quote_gstreamer_location
+
+
+@lru_cache(maxsize=None)
+def gstreamer_element_available(element: str) -> bool:
+    """Return whether the current GStreamer registry exposes an element."""
+    inspector = shutil.which("gst-inspect-1.0")
+    if inspector is None:
+        return False
+    try:
+        result = subprocess.run(
+            [inspector, element],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=2.0,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0
 
 
 def build_jetson_writer_pipeline(

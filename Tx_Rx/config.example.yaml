@@ -1,9 +1,10 @@
 schema_version: "1.0"
-staging_root: /home/jetson/3DGS/camera_system/Tx_Rx/staging
-server_url: http://10.150.14.62:8000
-remote_task_root: /home/yp/GaussianObject/rx_tasks
+staging_root: /absolute/path/to/camera-system-runtime/staging
+server_url: http://192.168.1.100:8000
+# 仅为旧部署兼容；Jetson 客户端和查看器不使用 WSL 文件路径。
+remote_task_root: /absolute/path/on/wsl/rx_tasks
 upload_timeout_seconds: 300
-result_root: /home/jetson/3DGS/camera_system/result
+result_root: /absolute/path/to/camera-system-results
 result_layout: capture_flat
 request_timeout_seconds: 300
 status_poll_interval_seconds: 2

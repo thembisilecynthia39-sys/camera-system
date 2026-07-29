@@ -4,10 +4,12 @@ import numpy as np
 import pytest
 from PySide6.QtCore import QPoint, QPointF, Qt
 from PySide6.QtGui import QPixmap, QWheelEvent
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QLabel, QPushButton
 
 from multiwebcam.profiles import SourceProfile
 from multiwebcam.profiles.repository import ProfileRepository
+from multiwebcam.quality.guidance import CaptureGuidance
 from multiwebcam.quality.metrics import ObjectRegion
 from multiwebcam.recognition import InferenceStatus
 from multiwebcam.sources.config import FrameSourceConfig
@@ -102,6 +104,38 @@ def test_grid_view_shows_inference_inactive(qapp):
     assert any("AI: 启发式 | 未启用" in label.text() for label in labels)
 
 
+def test_grid_view_escape_exits_fullscreen_and_syncs_button(qapp):
+    view = GridView()
+    view.show()
+    qapp.processEvents()
+    view._toggle_fullscreen()
+    qapp.processEvents()
+    assert view.isFullScreen()
+
+    QTest.keyClick(view, Qt.Key_Escape)
+    qapp.processEvents()
+
+    assert not view.isFullScreen()
+    assert view._fullscreen_btn.text() == "全屏"
+    view.close()
+
+
+def test_grid_view_fullscreen_exit_restores_maximized_state(qapp):
+    view = GridView()
+    view.showMaximized()
+    qapp.processEvents()
+    assert view.isMaximized()
+    view._toggle_fullscreen()
+    qapp.processEvents()
+
+    QTest.keyClick(view, Qt.Key_Escape)
+    qapp.processEvents()
+
+    assert not view.isFullScreen()
+    assert view.isMaximized()
+    view.close()
+
+
 def test_grid_view_exposes_keyboard_accessible_staging_upload_action(qapp):
     view = GridView()
     requests = []
@@ -112,6 +146,31 @@ def test_grid_view_exposes_keyboard_accessible_staging_upload_action(qapp):
 
     assert requests == [True]
     assert button.isEnabled()
+
+
+def test_grid_view_presents_eight_angle_progress_as_distinct_steps(qapp):
+    view = GridView(capture_only=True)
+    guidance = CaptureGuidance(
+        current_angle_deg=90,
+        readiness_percent=78.0,
+        readiness_label="acceptable",
+        progress_percent=25.0,
+        next_angle_deg=90,
+        completed_angles=(0, 45),
+        suggested_retake_angle=None,
+        warning=None,
+        ready_to_capture=True,
+        loop_complete=False,
+    )
+
+    view.update_guidance(guidance)
+
+    assert view._guide_progress.value() == 25
+    assert view._guide_progress.format() == "2 / 8"
+    assert len(view._guide_angle_steps) == 8
+    assert view._guide_angle_steps[0].property("state") == "done"
+    assert view._guide_angle_steps[90].property("state") == "current"
+    assert view._guide_angle_steps[135].property("state") == "pending"
 
 
 def test_source_info_dataclass():
@@ -175,7 +234,7 @@ def test_3dgs_model_dialog_opens_result_directory(tmp_path, monkeypatch):
 
     coordinator._select_3dgs_model(view)
 
-    assert dialog_calls[0][2] == "/home/jetson/3DGS/camera_system/result"
+    assert dialog_calls[0][2] == str(tmp_path / "result")
 
 
 def test_capture_coordinator_does_not_raise_when_session_start_fails(tmp_path):
@@ -360,6 +419,55 @@ def test_capture_coordinator_initialize(tmp_path):
         assert coordinator.session is not None
     else:
         assert coordinator.session is None
+
+
+def test_capture_coordinator_uses_first_usb2_source_as_initial_480p_anchor(
+    tmp_path, monkeypatch
+):
+    import multiwebcam.ui.coordinator as coordinator_module
+
+    repo = ProfileRepository(tmp_path)
+    profiles = (
+        SourceProfile.with_defaults(0, "usb-root-1.3"),
+        SourceProfile.with_defaults(1, "usb-root-2.1.2"),
+        SourceProfile.with_defaults(2, "usb-root-2.4.3"),
+        SourceProfile.with_defaults(3, "usb-root-2.4.4"),
+    )
+    for profile in profiles:
+        repo.save(profile.with_resolution((1280, 720)))
+
+    discovered = [
+        FrameSourceOptions(
+            path=f"/dev/video{source_id * 2}",
+            model=f"Camera {source_id}",
+            driver="uvcvideo",
+            bus_info=profile.bus_info,
+            modes=(VideoMode("MJPG", 1280, 720, 30.0),),
+        )
+        for source_id, profile in enumerate(profiles)
+    ]
+
+    class _FakeSession:
+        def __init__(self, frame_sources, recording_settings=None):
+            self.frame_sources = frame_sources
+            self.active_device_paths = [
+                source.device_path for source in frame_sources
+            ]
+
+    monkeypatch.setattr(coordinator_module, "CaptureSession", _FakeSession)
+
+    coordinator = CaptureCoordinator(tmp_path)
+    coordinator.initialize(discovered=discovered)
+
+    assert {
+        source_id: config.resolution
+        for source_id, config in coordinator._runtime_configs.items()
+    } == {
+        0: (1280, 720),
+        1: (640, 480),
+        2: (1280, 720),
+        3: (1280, 720),
+    }
 
 
 def test_capture_coordinator_downgrades_third_720p_source_on_same_usb_root(tmp_path):

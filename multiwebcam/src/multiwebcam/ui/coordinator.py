@@ -16,9 +16,9 @@ from multiwebcam.ui.recording_intent import GridRecordingIntent
 
 from multiwebcam.pipeline.session import CaptureSession
 from multiwebcam.profiles import AppSettings, ControlValue, ProfileRepository, SourceProfile
-from multiwebcam.quality.guidance import CaptureGuidanceTracker
-from multiwebcam.quality.metrics import evaluate_capture_set
-from multiwebcam.snapshot import SnapshotCameraInfo, save_snapshot_set
+from multiwebcam.quality.guidance import CaptureGuidanceTracker, CaptureValidation
+from multiwebcam.quality.metrics import CaptureSetQuality
+from multiwebcam.snapshot import SnapshotCameraInfo, SnapshotResult, save_snapshot_set
 from multiwebcam.sources import (
     FrameSource,
     FrameSourceConfig,
@@ -35,7 +35,35 @@ _HOTPLUG_DEBOUNCE_MS = 1000
 _HIGH_RESOLUTION = (1280, 720)
 _LOW_RESOLUTION = (640, 480)
 _MAX_HIGH_RESOLUTION_SOURCES_PER_USB_ROOT = 2
-_3DGS_MODEL_DIR = Path("/home/jetson/3DGS/camera_system/result")
+
+
+def _initial_low_resolution_source_ids(
+    matched: list[tuple[FrameSourceOptions, SourceProfile]],
+    active_ids: set[int],
+) -> set[int]:
+    """Choose stable low-resolution anchors before opening USB cameras.
+
+    When more than two configured 720p sources share one USB root, lowering
+    the last enumerated source is not reliable: endpoint scheduling on the
+    validated Jetson topology requires the first USB2 source to be the 480p
+    anchor.  Select the lowest source IDs up front so the assignment is
+    deterministic and independent of discovery iteration side effects.
+    """
+    high_sources_by_root: dict[str, list[int]] = {}
+    for options, profile in matched:
+        if (
+            profile.source_id in active_ids
+            and profile.resolution == _HIGH_RESOLUTION
+        ):
+            root_bus = usb_root_bus(options.bus_info)
+            high_sources_by_root.setdefault(root_bus, []).append(profile.source_id)
+
+    low_resolution_ids: set[int] = set()
+    for source_ids in high_sources_by_root.values():
+        overflow = len(source_ids) - _MAX_HIGH_RESOLUTION_SOURCES_PER_USB_ROOT
+        if overflow > 0:
+            low_resolution_ids.update(sorted(source_ids)[:overflow])
+    return low_resolution_ids
 
 
 def _sanitize_recording_name(raw: str) -> str:
@@ -114,7 +142,13 @@ class _CameraSwitchWorker(QThread):
 
     def run(self) -> None:
         try:
-            result = self._coordinator._switch_ignore_state_blocking(self._source_id, self._ignore)
+            result = self._coordinator._switch_ignore_state_blocking(
+                self._source_id,
+                self._ignore,
+                cancel_check=self.isInterruptionRequested,
+            )
+        except InterruptedError:
+            return
         except Exception as exc:
             logger.exception("Camera switch failed")
             result = CameraSwitchResult(
@@ -133,7 +167,13 @@ class _DiscoveryWorker(QThread):
 
     def run(self) -> None:
         try:
-            self.discovery_completed.emit(discover_frame_sources(), None)
+            result = discover_frame_sources(
+                cancel_check=self.isInterruptionRequested,
+            )
+            if not self.isInterruptionRequested():
+                self.discovery_completed.emit(result, None)
+        except InterruptedError:
+            return
         except Exception as exc:
             logger.exception("Camera discovery failed")
             self.discovery_completed.emit(None, str(exc))
@@ -199,11 +239,84 @@ class _TaskPackageWorker(QThread):
         try:
             from tx_rx.jetson_client import build_configured_task_package
 
-            result = build_configured_task_package(self._capture_dir)
+            result = build_configured_task_package(
+                self._capture_dir,
+                cancel_check=self.isInterruptionRequested,
+            )
+            if self.isInterruptionRequested():
+                return
             self.package_completed.emit(result, None)
         except Exception as exc:
+            if self.isInterruptionRequested():
+                return
             logger.exception("Task package generation failed for %s", self._capture_dir)
             self.package_completed.emit(None, str(exc).strip() or type(exc).__name__)
+
+
+@dataclass(frozen=True)
+class _SnapshotRequest:
+    output_root: Path
+    capture_name: str
+    object_name: str
+    packets: dict
+    camera_info: dict[str, SnapshotCameraInfo]
+    quality: CaptureSetQuality
+    angle_deg: int
+    tracker: CaptureGuidanceTracker
+
+
+@dataclass(frozen=True)
+class _SnapshotOutcome:
+    request: _SnapshotRequest
+    validation: CaptureValidation | None
+    result: SnapshotResult | None
+    error: str | None = None
+
+
+class _SnapshotWorker(QThread):
+    """Validate one angle and compress its JPEG files off the Qt thread."""
+
+    snapshot_completed = Signal(object)
+
+    def __init__(self, request: _SnapshotRequest) -> None:
+        super().__init__()
+        self._request = request
+
+    def run(self) -> None:
+        request = self._request
+        try:
+            validation = request.tracker.validate_capture(
+                request.angle_deg,
+                request.packets,
+                request.quality,
+            )
+            if not validation.accepted:
+                self.snapshot_completed.emit(
+                    _SnapshotOutcome(request, validation, None)
+                )
+                return
+            result = save_snapshot_set(
+                request.output_root,
+                request.capture_name,
+                request.object_name,
+                request.packets,
+                request.camera_info,
+                request.quality,
+                ok_to_capture=True,
+                angle_deg=request.angle_deg,
+                readiness_percent=validation.guidance.readiness_percent,
+                progress_percent=validation.guidance.progress_percent,
+                readiness_label=validation.guidance.readiness_label,
+            )
+        except Exception as exc:
+            logger.exception("Failed to capture still images")
+            self.snapshot_completed.emit(
+                _SnapshotOutcome(request, None, None, str(exc))
+            )
+            return
+        self.snapshot_completed.emit(
+            _SnapshotOutcome(request, validation, result)
+        )
 
 
 class _StagingScanWorker(QThread):
@@ -241,12 +354,21 @@ class _StagedUploadWorker(QThread):
             self.upload_completed.emit([], [str(exc).strip() or type(exc).__name__])
             return
         for index, task_dir in enumerate(self._task_dirs, start=1):
+            if self.isInterruptionRequested():
+                break
             self.upload_status.emit(f"正在上传 {index}/{total}: {task_dir.name}")
             try:
-                results.append(upload_staged_task(task_dir))
+                results.append(
+                    upload_staged_task(
+                        task_dir,
+                        cancel_check=self.isInterruptionRequested,
+                    )
+                )
             except Exception as exc:
                 logger.exception("Staged task upload failed for %s", task_dir)
                 errors.append(f"{task_dir.name}: {str(exc).strip() or type(exc).__name__}")
+                if self.isInterruptionRequested():
+                    break
         self.upload_completed.emit(results, errors)
 
 
@@ -265,7 +387,11 @@ class _CaptureTransferWorker(QThread):
     def run(self) -> None:
         try:
             from tx_rx.config import load_config
-            from tx_rx.jetson_client import build_configured_task_package, upload_staged_task
+            from tx_rx.jetson_client import (
+                TaskUploadError,
+                build_configured_task_package,
+                upload_staged_task,
+            )
             from tx_rx.jetson_client.transfer import (
                 acknowledge_result,
                 download_ply,
@@ -273,15 +399,24 @@ class _CaptureTransferWorker(QThread):
                 poll_status,
             )
 
+            def check_interruption() -> None:
+                if self.isInterruptionRequested():
+                    raise TaskUploadError("transfer cancelled")
+
+            check_interruption()
             config = load_config()
             self.log_message.emit(f"开始校验本地任务：{self._capture_dir.name}")
             self.progress_changed.emit(10, "正在校验照片文件夹...")
             package = build_configured_task_package(self._capture_dir)
+            check_interruption()
             self.log_message.emit(f"照片校验通过：capture_id={package.capture_id}")
             self.log_message.emit(f"任务整理目录：{package.staging_dir}")
             self.progress_changed.emit(35, "8张照片已整理，正在上传至 WSL...")
             self.log_message.emit("正在请求 WSL /upload，请等待服务端确认...")
-            result = upload_staged_task(package.staging_dir)
+            result = upload_staged_task(
+                package.staging_dir,
+                cancel_check=self.isInterruptionRequested,
+            )
             response = result.upload_response
             self.log_message.emit("WSL /upload 已返回并通过协议校验")
             self.log_message.emit(
@@ -325,7 +460,13 @@ class _CaptureTransferWorker(QThread):
             )
             self.log_message.emit(f"训练完成：status={status.status.value}")
             self.progress_changed.emit(78, "训练完成，正在获取模型元数据...")
-            metadata = get_ply_metadata(result.task_id, package.capture_id, config)
+            check_interruption()
+            metadata = get_ply_metadata(
+                result.task_id,
+                package.capture_id,
+                config,
+                cancel_check=self.isInterruptionRequested,
+            )
             self.log_message.emit(
                 f"模型元数据通过校验：{metadata.filename}, {metadata.file_size} bytes, "
                 f"{metadata.chunk_count} 块"
@@ -355,7 +496,13 @@ class _CaptureTransferWorker(QThread):
                 progress_callback=download_progress,
             )
             self.progress_changed.emit(99, "模型下载完成，正在执行完整校验和 ACK...")
-            ack = acknowledge_result(metadata, final_path, config)
+            check_interruption()
+            ack = acknowledge_result(
+                metadata,
+                final_path,
+                config,
+                cancel_check=self.isInterruptionRequested,
+            )
             self.log_message.emit(f"模型已校验并保存：{final_path}")
             self.log_message.emit(f"接收确认：message_type={ack.message_type}")
             self.progress_changed.emit(100, "完整闭环完成：模型已安全保存到 Jetson")
@@ -382,10 +529,20 @@ class CaptureCoordinator(QObject):
     """
 
     capture_available = Signal()
+    runtime_state_changed = Signal(str, object)
+    capture_progress_changed = Signal(object)
+    capture_completed = Signal(object)
+    model_resources_released = Signal(bool)
 
-    def __init__(self, project_path: Path, parent: QObject | None = None) -> None:
+    def __init__(
+        self,
+        project_path: Path,
+        parent: QObject | None = None,
+        capture_only: bool = False,
+    ) -> None:
         super().__init__(parent)
         self._project_path = project_path
+        self._capture_only = capture_only
         self._repo = ProfileRepository(project_path)
         self._settings = AppSettings()
         self._session: CaptureSession | None = None
@@ -398,6 +555,7 @@ class CaptureCoordinator(QObject):
         self._discovery_worker: _DiscoveryWorker | None = None
         self._camera_load_worker: _CameraLoadWorker | None = None
         self._task_package_worker: _TaskPackageWorker | None = None
+        self._snapshot_worker: _SnapshotWorker | None = None
         self._staging_scan_worker: _StagingScanWorker | None = None
         self._staged_upload_worker: _StagedUploadWorker | None = None
         self._capture_transfer_worker: _CaptureTransferWorker | None = None
@@ -413,6 +571,7 @@ class CaptureCoordinator(QObject):
         self._active_snapshot_object_name: str | None = None
         self._last_guidance = None
         self._manual_camera_load_requested = False
+        self._hotplug_pending = False
         self._hotplug_timer = QTimer(self)
         self._hotplug_timer.setSingleShot(True)
         self._hotplug_timer.setInterval(_HOTPLUG_DEBOUNCE_MS)
@@ -423,7 +582,8 @@ class CaptureCoordinator(QObject):
         self._staging_scan_timer = QTimer(self)
         self._staging_scan_timer.setInterval(30000)
         self._staging_scan_timer.timeout.connect(self._start_staging_scan)
-        self._staging_scan_timer.start()
+        if not self._capture_only:
+            self._staging_scan_timer.start()
 
     def initialize(
         self,
@@ -482,7 +642,10 @@ class CaptureCoordinator(QObject):
         )
 
         frame_sources: list[FrameSource] = []
-        high_resolution_by_root: dict[str, int] = {}
+        low_resolution_source_ids = _initial_low_resolution_source_ids(
+            matched,
+            active_ids,
+        )
 
         for options, profile in matched:
             should_ignore = profile.source_id not in active_ids
@@ -498,18 +661,12 @@ class CaptureCoordinator(QObject):
                 gstreamer_pipeline=profile.gstreamer_pipeline,
             )
 
-            # USB bandwidth is shared by the root controller, not by the
-            # entire machine.  In particular, the fixed USB3 camera must not
-            # consume the two-high-resolution budget intended for the USB2
-            # cameras.  Apply the same policy during initial construction and
-            # during standby activation so both paths behave consistently.
-            root_bus = usb_root_bus(options.bus_info)
-            if not should_ignore and config.resolution == _HIGH_RESOLUTION:
-                high_count = high_resolution_by_root.get(root_bus, 0)
-                if high_count >= _MAX_HIGH_RESOLUTION_SOURCES_PER_USB_ROOT:
-                    config = self._config_with_resolution(config, _LOW_RESOLUTION)
-                else:
-                    high_resolution_by_root[root_bus] = high_count + 1
+            # USB bandwidth is shared by the root controller.  Apply the
+            # deterministic anchor selected above instead of lowering the
+            # last enumerated camera, which is unstable on the Jetson USB2
+            # topology documented for this project.
+            if profile.source_id in low_resolution_source_ids:
+                config = self._config_with_resolution(config, _LOW_RESOLUTION)
 
             if not profile.ignore:
                 source = FrameSource(options.path, config)
@@ -545,6 +702,9 @@ class CaptureCoordinator(QObject):
                 self._session,
                 self.get_source_id_lookup(),
                 inference_settings=self._settings.inference,
+            )
+            self._presenter.model_resources_released.connect(
+                self.model_resources_released.emit
             )
 
     def _rebind_profiles_if_topology_changed(
@@ -609,6 +769,10 @@ class CaptureCoordinator(QObject):
         """
         if self._camera_load_worker is not None or self._discovery_worker is not None:
             return
+        self.runtime_state_changed.emit(
+            "discovering",
+            {"message": "正在后台扫描摄像头…", "camera_count": 0},
+        )
         if self._grid_view is not None:
             if hasattr(self._grid_view, "set_camera_load_busy"):
                 self._grid_view.set_camera_load_busy(True)
@@ -646,7 +810,21 @@ class CaptureCoordinator(QObject):
                 info.error = detail
 
     def _sync_capture_start_state(self) -> None:
-        if self._grid_view is None or self._session is None:
+        if self._session is None:
+            self.runtime_state_changed.emit(
+                "unavailable",
+                {
+                    "message": "未发现可用摄像头，请检查 USB 连接或 /dev/video*。",
+                    "camera_count": 0,
+                },
+            )
+            if self._grid_view is not None:
+                self._grid_view.set_capture_available(
+                    False,
+                    "未发现可用摄像头，请检查 /dev/video*、v4l2-ctl 或 USB 连接",
+                )
+            return
+        if self._grid_view is None:
             return
 
         active_count = len(self.get_source_id_lookup())
@@ -667,39 +845,82 @@ class CaptureCoordinator(QObject):
                 )
         elif active_count:
             self._grid_view.set_photo_capture_result("视频传输已启动", ok=True)
+        if active_count:
+            self.runtime_state_changed.emit(
+                "ready",
+                {
+                    "message": "已启动 {} 路摄像头。".format(active_count),
+                    "camera_count": active_count,
+                },
+            )
+        else:
+            self.runtime_state_changed.emit(
+                "unavailable",
+                {
+                    "message": "摄像头已发现，但没有可用视频流。",
+                    "camera_count": 0,
+                    "failed_count": failed_count,
+                },
+            )
 
-    def stop(self) -> None:
+    def stop(self, timeout_ms: int = 5000) -> bool:
         """Stop presenter and session."""
+        import time
+
         self._hotplug_timer.stop()
         self._staging_scan_timer.stop()
-        self._disconnect_view()
-        if self._discovery_worker is not None:
-            self._discovery_worker.wait()
-            self._discovery_worker = None
-        if self._switch_worker is not None:
-            self._switch_worker.wait()
-            self._switch_worker = None
-        if self._camera_load_worker is not None:
-            self._camera_load_worker.wait()
-            self._camera_load_worker = None
-        if self._task_package_worker is not None:
-            self._task_package_worker.wait()
-            self._task_package_worker = None
+        deadline = time.monotonic() + max(0, timeout_ms) / 1000.0
+        all_stopped = True
+
+        def stop_worker(attribute: str) -> None:
+            nonlocal all_stopped
+            worker = getattr(self, attribute)
+            if worker is None:
+                return
+            worker.requestInterruption()
+            remaining = max(0, int((deadline - time.monotonic()) * 1000))
+            if worker.wait(remaining):
+                setattr(self, attribute, None)
+            else:
+                logger.error("%s did not stop before shutdown deadline", attribute)
+                all_stopped = False
+
+        stop_worker("_discovery_worker")
+        stop_worker("_switch_worker")
+        stop_worker("_camera_load_worker")
+        stop_worker("_task_package_worker")
+        stop_worker("_snapshot_worker")
+        if self._task_package_worker is None:
             self._packaging_capture_dir = None
-        if self._staging_scan_worker is not None:
-            self._staging_scan_worker.wait()
-            self._staging_scan_worker = None
-        if self._staged_upload_worker is not None:
-            self._staged_upload_worker.wait()
-            self._staged_upload_worker = None
-        if self._capture_transfer_worker is not None:
-            self._capture_transfer_worker.requestInterruption()
-            self._capture_transfer_worker.wait()
-            self._capture_transfer_worker = None
+        stop_worker("_staging_scan_worker")
+        stop_worker("_staged_upload_worker")
+        stop_worker("_capture_transfer_worker")
+        if not all_stopped:
+            self._hotplug_timer.start()
+            if not self._capture_only:
+                self._staging_scan_timer.start()
+            return False
         if self._presenter:
-            self._presenter.shutdown()
+            remaining = max(0, int((deadline - time.monotonic()) * 1000))
+            if self._presenter.shutdown(remaining) is False:
+                logger.error("Capture presenter did not stop before shutdown deadline")
+                self._hotplug_timer.start()
+                if not self._capture_only:
+                    self._staging_scan_timer.start()
+                return False
         if self._session:
-            self._session.stop()
+            remaining = max(0.0, deadline - time.monotonic())
+            if self._session.stop(remaining) is False:
+                self._hotplug_timer.start()
+                if not self._capture_only:
+                    self._staging_scan_timer.start()
+                return False
+        self._disconnect_view()
+        self.runtime_state_changed.emit(
+            "stopped",
+            {"message": "摄像头线程已停止并释放。", "camera_count": 0},
+        )
+        return True
 
     def _watch_hotplug_paths(self) -> None:
         paths = []
@@ -711,6 +932,14 @@ class CaptureCoordinator(QObject):
 
     def _schedule_hotplug_poll(self) -> None:
         if self._session is not None and self._session.is_recording:
+            self._hotplug_pending = True
+            self.runtime_state_changed.emit(
+                "error",
+                {
+                    "message": "录制期间检测到摄像头连接变化；录制结束后将自动复查。",
+                    "camera_count": len(self.get_source_id_lookup()),
+                },
+            )
             return
         self._hotplug_timer.start()
 
@@ -776,13 +1005,14 @@ class CaptureCoordinator(QObject):
 
         from multiwebcam.ui.views import GridView
 
-        view = GridView(parent)
+        view = GridView(parent, capture_only=self._capture_only)
         self._grid_view = view
         view.set_app_settings(self._settings)
         view.settings_save_requested.connect(lambda settings: self._save_app_settings(view, settings))
-        view.upload_staged_tasks_requested.connect(lambda: self._upload_staged_tasks(view))
-        view.transfer_folder_requested.connect(lambda: self._select_transfer_folder(view))
-        view.transfer_upload_requested.connect(lambda path: self._upload_selected_capture(view, path))
+        if not self._capture_only:
+            view.upload_staged_tasks_requested.connect(lambda: self._upload_staged_tasks(view))
+            view.transfer_folder_requested.connect(lambda: self._select_transfer_folder(view))
+            view.transfer_upload_requested.connect(lambda path: self._upload_selected_capture(view, path))
         view.set_storage_available(shutil.disk_usage(self._project_path).free)
         for source_id, info in self._sources.items():
             view.add_source(source_id, info.profile.label, ignore=info.profile.ignore)
@@ -798,7 +1028,8 @@ class CaptureCoordinator(QObject):
         if self._session is None or self._presenter is None:
             view.set_capture_available(False, "未发现可用摄像头，请检查 /dev/video*、v4l2-ctl 或 USB 连接")
             view.open_folder_requested.connect(self._open_project_folder)
-            view.model_file_requested.connect(lambda: self._select_3dgs_model(view))
+            if not self._capture_only:
+                view.model_file_requested.connect(lambda: self._select_3dgs_model(view))
             view.load_cameras_requested.connect(lambda: self._load_cameras(view))
             view.pause_video_requested.connect(lambda: self._load_cameras(view))
             return view
@@ -815,15 +1046,52 @@ class CaptureCoordinator(QObject):
         self._connect(p.recording_stopping, view.set_stopping)
         self._connect(p.recording_queue_depth, view.update_queue_depth)
         self._connect(p.recording_duration, view.update_duration)
+        self._connect(
+            p.recording_failed,
+            lambda message: self.runtime_state_changed.emit(
+                "error",
+                {
+                    "message": message,
+                    "camera_count": len(self.get_source_id_lookup()),
+                },
+            ),
+        )
 
         def rec_true() -> None:
             view.set_recording(True)
+            self.runtime_state_changed.emit(
+                "recording",
+                {
+                    "message": "正在录制多路视频。",
+                    "camera_count": len(self.get_source_id_lookup()),
+                },
+            )
 
         def _on_recording_stopped():
             view.set_recording(False)
             view.set_default_recording_name(next_recording_name(recordings_dir))
+            self.runtime_state_changed.emit(
+                "ready",
+                {
+                    "message": "录制已停止，摄像头保持预览。",
+                    "camera_count": len(self.get_source_id_lookup()),
+                },
+            )
+            if self._hotplug_pending:
+                self._hotplug_pending = False
+                self._hotplug_timer.start()
 
         self._connect(p.recording_started, rec_true)
+        self._connect(
+            p.recording_stopping,
+            lambda: self.runtime_state_changed.emit(
+                "stopping",
+                {
+                    "message": "正在安全结束录制并清空编码队列…",
+                    "camera_count": len(self.get_source_id_lookup()),
+                },
+            ),
+        )
         self._connect(p.recording_stopped, _on_recording_stopped)
 
         self._connect(view.ignore_toggled, self._on_ignore_toggled)
@@ -862,7 +1130,8 @@ class CaptureCoordinator(QObject):
         view.pause_video_requested.connect(lambda: self._toggle_video_transmission(view))
 
         view.open_folder_requested.connect(self._open_project_folder)
-        view.model_file_requested.connect(lambda: self._select_3dgs_model(view))
+        if not self._capture_only:
+            view.model_file_requested.connect(lambda: self._select_3dgs_model(view))
 
         p.enter_grid_mode()
         self._pause_ignored_producers()
@@ -885,21 +1154,31 @@ class CaptureCoordinator(QObject):
 
     def _on_grid_workspace_changed(self, index: int) -> None:
         """Transfer compute resources between live capture and model viewing."""
+        self.set_model_mode(index == 5)
+
+    def set_model_mode(self, active: bool) -> bool:
+        """Pause or resume capture work for an externally hosted 3DGS viewer."""
         if self._presenter is None:
-            return
-        if index == 5:
+            if active:
+                self.model_resources_released.emit(True)
+            return True
+        if active:
+            if self._presenter.mode == "model":
+                return True
             try:
                 self._presenter.enter_model_mode()
                 if self._grid_view is not None:
                     self._grid_view.set_video_paused(True, "摄像头已暂停，资源用于 3DGS")
             except RuntimeError:
                 logger.warning("Cannot pause cameras for 3DGS while recording")
-            return
-        if self._presenter.mode == "model":
+                return False
+            return True
+        if self._presenter.mode in {"model", "quiescing"}:
             self._presenter.enter_grid_mode()
             self._pause_ignored_producers()
             if self._grid_view is not None:
                 self._grid_view.set_video_paused(False, "视频传输已恢复")
+        return True
 
     def _select_transfer_folder(self, view) -> None:
         from PySide6.QtWidgets import QFileDialog
@@ -1031,7 +1310,7 @@ class CaptureCoordinator(QObject):
         selected, _ = QFileDialog.getOpenFileName(
             view,
             "打开 3DGS 模型",
-            str(_3DGS_MODEL_DIR),
+            str(self._project_path / "result"),
             "Gaussian Splat PLY (*.ply);;所有文件 (*)",
         )
         if not selected:
@@ -1039,7 +1318,7 @@ class CaptureCoordinator(QObject):
         view.load_model(selected)
 
     def _on_photo_requested(self, view) -> None:
-        if self._presenter is None:
+        if self._presenter is None or self._snapshot_worker is not None:
             return
         packets = self._presenter.latest_packets()
         if not packets:
@@ -1052,18 +1331,14 @@ class CaptureCoordinator(QObject):
             view.set_photo_capture_result(f"无法匹配摄像头信息: {', '.join(missing)}", ok=False)
             return
 
-        quality = evaluate_capture_set(
-            packets,
-            object_regions=self._presenter.latest_object_regions(),
-        )
-        selected_angle = view.selected_angle_deg()
-        validation = self._guidance_tracker.validate_capture(selected_angle, packets, quality)
-        self._last_guidance = validation.guidance
-        view.update_guidance(validation.guidance)
-        if not validation.accepted:
-            view.set_photo_capture_result(f"拍摄已阻止: {_zh_capture_message(validation.message)}", ok=False)
+        quality = self._presenter.latest_quality()
+        if quality is None:
+            view.set_photo_capture_result("图像质量检查尚未完成，请稍候再拍", ok=False)
             return
-
+        if set(quality.frame_qualities) != set(packets):
+            view.set_photo_capture_result("摄像头画面刚发生变化，请稍候再拍", ok=False)
+            return
+        selected_angle = view.selected_angle_deg()
         raw_object_name = view.capture_object_name().strip()
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", raw_object_name):
             view.set_photo_capture_result("请先输入物体名称", ok=False)
@@ -1074,44 +1349,105 @@ class CaptureCoordinator(QObject):
                 self._project_path / "captures", self._active_snapshot_object_name
             )
 
-        try:
-            result = save_snapshot_set(
-                self._project_path / "captures",
-                self._active_snapshot_name,
-                self._active_snapshot_object_name,
-                packets,
-                camera_info,
-                quality,
-                ok_to_capture=validation.accepted,
-                angle_deg=selected_angle,
-                readiness_percent=validation.guidance.readiness_percent,
-                progress_percent=validation.guidance.progress_percent,
-                readiness_label=validation.guidance.readiness_label,
-            )
-        except Exception as exc:
-            logger.exception("Failed to capture still images")
-            view.set_photo_capture_result(f"拍摄失败: {exc}", ok=False)
+        request = _SnapshotRequest(
+            output_root=self._project_path / "captures",
+            capture_name=self._active_snapshot_name,
+            object_name=self._active_snapshot_object_name,
+            packets=packets,
+            camera_info=camera_info,
+            quality=quality,
+            angle_deg=selected_angle,
+            tracker=self._guidance_tracker,
+        )
+        view.set_photo_busy(True)
+        view.set_photo_capture_result("正在后台检查并保存当前角度…", ok=True)
+        self._snapshot_worker = _SnapshotWorker(request)
+        self._snapshot_worker.snapshot_completed.connect(
+            self._on_snapshot_completed
+        )
+        self._snapshot_worker.finished.connect(
+            self._snapshot_worker.deleteLater
+        )
+        self._snapshot_worker.start()
+
+    def _on_snapshot_completed(self, outcome: object) -> None:
+        worker = self._snapshot_worker
+        if worker is not None:
+            worker.wait()
+            self._snapshot_worker = None
+        if not isinstance(outcome, _SnapshotOutcome):
             return
 
-        guidance = self._guidance_tracker.register_capture(selected_angle, result.frame_id, packets, quality)
+        view = self._grid_view
+        if view is not None:
+            view.set_photo_busy(False)
+        if outcome.error:
+            if view is not None:
+                view.set_photo_capture_result(
+                    f"拍摄失败: {outcome.error}",
+                    ok=False,
+                )
+            return
+        if outcome.validation is None:
+            return
+        validation = outcome.validation
+        self._last_guidance = validation.guidance
+        if view is not None:
+            view.update_guidance(validation.guidance)
+        if not validation.accepted or outcome.result is None:
+            if view is not None:
+                view.set_photo_capture_result(
+                    f"拍摄已阻止: {_zh_capture_message(validation.message)}",
+                    ok=False,
+                )
+            return
+
+        request = outcome.request
+        result = outcome.result
+        guidance = self._guidance_tracker.register_capture(
+            request.angle_deg,
+            result.frame_id,
+            request.packets,
+            request.quality,
+        )
         self._last_guidance = guidance
-        view.update_guidance(guidance)
-        if guidance.next_angle_deg is not None:
-            view.set_selected_angle_deg(guidance.next_angle_deg)
+        self.capture_progress_changed.emit(guidance)
+        if view is not None:
+            view.update_guidance(guidance)
+            if guidance.next_angle_deg is not None:
+                view.set_selected_angle_deg(guidance.next_angle_deg)
         rel_dir = result.output_dir.relative_to(self._project_path)
         status = _zh_readiness_label(guidance.readiness_label)
-        view.set_photo_capture_result(
-            (
-                f"已拍摄 {selected_angle}° 第 {result.frame_id:06d} 组 "
-                f"({status} {guidance.readiness_percent:.0f}%, 进度 {guidance.progress_percent:.0f}%) "
-                f"-> {rel_dir}/images"
-            ),
-            ok=result.ok_to_capture,
-        )
+        if view is not None:
+            view.set_photo_capture_result(
+                (
+                    f"已拍摄 {request.angle_deg}° 第 {result.frame_id:06d} 组 "
+                    f"({status} {guidance.readiness_percent:.0f}%, 进度 {guidance.progress_percent:.0f}%) "
+                    f"-> {rel_dir}/images"
+                ),
+                ok=result.ok_to_capture,
+            )
         if guidance.loop_complete:
-            self._start_task_packaging(view, result.output_dir)
+            self._emit_capture_completion_if_ready(guidance, result.output_dir)
+            if not self._capture_only and view is not None:
+                self._start_task_packaging(view, result.output_dir)
             self._active_snapshot_name = None
             self._active_snapshot_object_name = None
+            self._guidance_tracker = CaptureGuidanceTracker()
+
+    def _emit_capture_completion_if_ready(self, guidance, capture_dir: Path) -> bool:
+        """Publish one application event only after all fixed angles are present."""
+        if not guidance.loop_complete:
+            return False
+        capture_dir = Path(capture_dir).resolve()
+        self.capture_completed.emit(
+            {
+                "capture_dir": str(capture_dir),
+                "object_name": self._active_snapshot_object_name or capture_dir.name,
+                "completed_angles": tuple(guidance.completed_angles),
+            }
+        )
+        return True
 
     def _start_task_packaging(self, view, capture_dir: Path) -> None:
         """Create the configured visible staging task once per completed capture."""
@@ -1266,10 +1602,18 @@ class CaptureCoordinator(QObject):
             view.update_guidance(None)
             self._last_guidance = None
             return
-        live_quality = quality or self._presenter.latest_quality() or evaluate_capture_set(packets)
-        guidance = self._guidance_tracker.evaluate(packets, live_quality, view.selected_angle_deg())
+        live_quality = quality or self._presenter.latest_quality()
+        if live_quality is None:
+            return
+        guidance = self._guidance_tracker.evaluate(
+            packets,
+            live_quality,
+            view.selected_angle_deg(),
+            check_matchability=False,
+        )
         self._last_guidance = guidance
         view.update_guidance(guidance)
+        self.capture_progress_changed.emit(guidance)
 
     def create_focus_view(self, source_id: int, parent=None):
         """Create and wire a focus view. Returns the view only."""
@@ -1462,6 +1806,7 @@ class CaptureCoordinator(QObject):
         ):
             return
         if self._session is not None and self._session.is_recording:
+            self._hotplug_pending = True
             return
 
         self._discovery_worker = _DiscoveryWorker()
@@ -1771,7 +2116,17 @@ class CaptureCoordinator(QObject):
             can_toggle_ignore = bool(info.device_path and not info.error) and not is_active_low_anchor
             self._grid_view.set_source_ignore_enabled(source_id, can_toggle_ignore)
 
-    def _switch_ignore_state_blocking(self, source_id: int, ignore: bool) -> CameraSwitchResult:
+    def _switch_ignore_state_blocking(
+        self,
+        source_id: int,
+        ignore: bool,
+        cancel_check=None,
+    ) -> CameraSwitchResult:
+        def check_cancelled() -> None:
+            if cancel_check is not None and cancel_check():
+                raise InterruptedError("camera switch cancelled")
+
+        check_cancelled()
         if self._session is None:
             return CameraSwitchResult(source_id, ignore, {}, "No active capture session")
         if self._session.is_recording:
@@ -1785,15 +2140,24 @@ class CaptureCoordinator(QObject):
 
         if ignore:
             if info.device_path in self._session.active_device_paths:
+                check_cancelled()
                 self._session.remove_source(info.device_path)
                 self._runtime_configs.pop(source_id, None)
+                check_cancelled()
             ignore_updates[source_id] = True
-            activated = self._activate_next_standby_blocking(ignore_updates, excluded_source_id=source_id)
+            activated = self._activate_next_standby_blocking(
+                ignore_updates,
+                excluded_source_id=source_id,
+                cancel_check=cancel_check,
+            )
             if activated:
                 return CameraSwitchResult(source_id, ignore, ignore_updates)
 
             try:
-                self._activate_source_blocking(source_id)
+                self._activate_source_blocking(
+                    source_id,
+                    cancel_check=cancel_check,
+                )
                 ignore_updates[source_id] = False
                 return CameraSwitchResult(
                     source_id,
@@ -1801,6 +2165,8 @@ class CaptureCoordinator(QObject):
                     ignore_updates,
                     "No standby source could replace the requested camera",
                 )
+            except InterruptedError:
+                raise
             except Exception as exc:
                 return CameraSwitchResult(source_id, ignore, ignore_updates, str(exc))
 
@@ -1812,7 +2178,11 @@ class CaptureCoordinator(QObject):
                 "Active camera pool is full",
             )
 
-        self._activate_source_blocking(source_id)
+        check_cancelled()
+        self._activate_source_blocking(
+            source_id,
+            cancel_check=cancel_check,
+        )
         ignore_updates[source_id] = False
         return CameraSwitchResult(source_id, ignore, ignore_updates)
 
@@ -1841,18 +2211,26 @@ class CaptureCoordinator(QObject):
         self,
         ignore_updates: dict[int, bool],
         excluded_source_id: int | None = None,
+        cancel_check=None,
     ) -> bool:
         if self._session is None:
             return False
         excluded_source_ids = {excluded_source_id} if excluded_source_id is not None else set()
         while len(self._session.active_device_paths) < self._max_active_sources:
+            if cancel_check is not None and cancel_check():
+                raise InterruptedError("camera switch cancelled")
             standby_id = self._choose_standby_source_id(ignore_updates, excluded_source_ids)
             if standby_id is None:
                 return False
             try:
-                self._activate_source_blocking(standby_id)
+                self._activate_source_blocking(
+                    standby_id,
+                    cancel_check=cancel_check,
+                )
                 ignore_updates[standby_id] = False
                 return True
+            except InterruptedError:
+                raise
             except Exception:
                 logger.exception("Failed to activate standby source %s", standby_id)
                 ignore_updates[standby_id] = True
@@ -1876,7 +2254,13 @@ class CaptureCoordinator(QObject):
                 return entry.source_id
         return None
 
-    def _activate_source_blocking(self, source_id: int) -> None:
+    def _activate_source_blocking(
+        self,
+        source_id: int,
+        cancel_check=None,
+    ) -> None:
+        if cancel_check is not None and cancel_check():
+            raise InterruptedError("camera switch cancelled")
         info = self._sources.get(source_id)
         if info is None or self._session is None or not info.device_path or info.error:
             return
@@ -1885,9 +2269,17 @@ class CaptureCoordinator(QObject):
 
         config = self._activation_config(info)
         source = FrameSource(info.device_path, config)
-        self._session.add_source(source)
+        if cancel_check is None:
+            self._session.add_source(source)
+        else:
+            self._session.add_source(
+                source,
+                cancel_check=cancel_check,
+            )
         self._runtime_configs[source_id] = config
         for name, cv in info.profile.controls.items():
+            if cancel_check is not None and cancel_check():
+                raise InterruptedError("camera switch cancelled")
             set_control(info.device_path, name, cv.value)
 
     def _activation_config(self, info: SourceInfo) -> FrameSourceConfig:

@@ -14,7 +14,7 @@ from urllib.parse import quote
 import requests
 
 from tx_rx.config import TxRxConfig, load_config
-from tx_rx.jetson_client.http_client import direct_session
+from tx_rx.jetson_client.http_client import direct_session, network_timeout
 from tx_rx.jetson_client.task_manifest import TaskPackageResult, build_configured_task_package
 from tx_rx.jetson_client.uploader import TaskUploadResult, upload_staged_task
 from tx_rx.protocol.models import AckResponse, PlyMetadata, StatusResponse, TaskStatus
@@ -43,23 +43,49 @@ def poll_status(
         _check_cancel(cancel_check)
         if time.monotonic() >= deadline:
             raise TransferError(f"status polling timed out for task {task_id}")
-        try:
-            response = client.get(
-                f"{config.server_url}/status/{quote(task_id, safe='')}",
-                timeout=config.request_timeout_seconds,
-            )
-            response.raise_for_status()
-            status = StatusResponse.model_validate(response.json())
-        except (requests.RequestException, ValueError, TypeError) as exc:
-            raise TransferError(f"cannot query status for task {task_id}: {exc}") from exc
-        _require_identity(status.task_id, status.capture_id, task_id, capture_id, "status")
+        remaining = max(0.1, deadline - time.monotonic())
+        status = get_status(
+            task_id,
+            capture_id,
+            config,
+            client,
+            timeout_seconds=min(config.request_timeout_seconds, remaining),
+        )
         if progress_callback:
             progress_callback(f"stage={status.stage or status.status.value} progress={status.progress}")
         if status.status is TaskStatus.FINISHED:
             return status
         if status.status is TaskStatus.FAILED:
             raise TransferError(f"reconstruction failed for task {task_id}: {status.error or status.message}")
-        _interruptible_wait(config.status_poll_interval_seconds, cancel_check)
+        _interruptible_wait(
+            min(config.status_poll_interval_seconds, max(0.0, deadline - time.monotonic())),
+            cancel_check,
+        )
+
+
+def get_status(
+    task_id: str,
+    capture_id: str,
+    config: TxRxConfig,
+    session: Optional[Any] = None,
+    timeout_seconds: Optional[float] = None,
+) -> StatusResponse:
+    """Query and validate one remote task status without polling."""
+
+    client = session or direct_session()
+    try:
+        response = client.get(
+            f"{config.server_url}/status/{quote(task_id, safe='')}",
+            timeout=network_timeout(
+                timeout_seconds or config.request_timeout_seconds
+            ),
+        )
+        response.raise_for_status()
+        status = StatusResponse.model_validate(response.json())
+    except (requests.RequestException, ValueError, TypeError) as exc:
+        raise TransferError(f"cannot query status for task {task_id}: {exc}") from exc
+    _require_identity(status.task_id, status.capture_id, task_id, capture_id, "status")
+    return status
 
 
 def get_ply_metadata(
@@ -67,14 +93,18 @@ def get_ply_metadata(
     capture_id: str,
     config: TxRxConfig,
     session: Optional[Any] = None,
+    cancel_check: Optional[CancelCheck] = None,
 ) -> PlyMetadata:
     """Fetch and strictly validate result metadata."""
 
     client = session or direct_session()
     try:
-        response = client.get(
+        response = _cancellable_request(
+            client,
+            "get",
             f"{config.server_url}/result/{quote(task_id, safe='')}/metadata",
-            timeout=config.request_timeout_seconds,
+            config.request_timeout_seconds,
+            cancel_check,
         )
         response.raise_for_status()
         metadata = PlyMetadata.model_validate(response.json())
@@ -114,6 +144,7 @@ def download_ply(
     result_dir.mkdir(parents=True, exist_ok=True)
     final_path = result_dir / final_filename
     part_path = result_dir / f"{final_filename}.part"
+    deadline = time.monotonic() + config.download_timeout_seconds
     if final_path.is_file():
         if final_path.stat().st_size == metadata.file_size and _sha256_file(final_path) == metadata.sha256:
             return final_path
@@ -123,6 +154,10 @@ def download_ply(
         with part_path.open("wb") as output:
             for chunk_index in range(metadata.chunk_count):
                 _check_cancel(cancel_check)
+                if time.monotonic() >= deadline:
+                    raise TransferError(
+                        f"PLY download timed out for task {metadata.task_id}"
+                    )
                 start = chunk_index * metadata.chunk_size
                 end = min(start + metadata.chunk_size, metadata.file_size) - 1
                 headers = {
@@ -133,27 +168,39 @@ def download_ply(
                     f"{config.server_url}/result/{quote(metadata.task_id, safe='')}",
                     headers=headers,
                     stream=True,
-                    timeout=config.download_timeout_seconds,
+                    timeout=network_timeout(
+                        max(0.1, deadline - time.monotonic()),
+                        read_cap=5.0,
+                    ),
                 )
-                if response.status_code != 206:
-                    raise TransferError(f"chunk {chunk_index}: expected HTTP 206, got {response.status_code}")
-                expected_length = end - start + 1
-                _validate_chunk_headers(response.headers, metadata, chunk_index, start, end, expected_length)
-                digest = hashlib.sha256()
-                received = 0
-                for data in response.iter_content(chunk_size=1024 * 1024):
-                    _check_cancel(cancel_check)
-                    if not data:
-                        continue
-                    received += len(data)
-                    if received > expected_length:
-                        raise TransferError(f"chunk {chunk_index}: response exceeds requested range")
-                    digest.update(data)
-                    output.write(data)
-                if received != expected_length:
-                    raise TransferError(f"chunk {chunk_index}: received {received} bytes, expected {expected_length}")
-                if digest.hexdigest() != response.headers["X-GO-Chunk-SHA256"]:
-                    raise TransferError(f"chunk {chunk_index}: SHA-256 mismatch")
+                try:
+                    if response.status_code != 206:
+                        raise TransferError(f"chunk {chunk_index}: expected HTTP 206, got {response.status_code}")
+                    expected_length = end - start + 1
+                    _validate_chunk_headers(response.headers, metadata, chunk_index, start, end, expected_length)
+                    digest = hashlib.sha256()
+                    received = 0
+                    for data in response.iter_content(chunk_size=1024 * 1024):
+                        _check_cancel(cancel_check)
+                        if time.monotonic() >= deadline:
+                            raise TransferError(
+                                f"PLY download timed out for task {metadata.task_id}"
+                            )
+                        if not data:
+                            continue
+                        received += len(data)
+                        if received > expected_length:
+                            raise TransferError(f"chunk {chunk_index}: response exceeds requested range")
+                        digest.update(data)
+                        output.write(data)
+                    if received != expected_length:
+                        raise TransferError(f"chunk {chunk_index}: received {received} bytes, expected {expected_length}")
+                    if digest.hexdigest() != response.headers["X-GO-Chunk-SHA256"]:
+                        raise TransferError(f"chunk {chunk_index}: SHA-256 mismatch")
+                finally:
+                    close = getattr(response, "close", None)
+                    if callable(close):
+                        close()
                 if progress_callback:
                     progress_callback(f"download={end + 1}/{metadata.file_size}")
             output.flush()
@@ -175,9 +222,11 @@ def acknowledge_result(
     final_path: Path,
     config: TxRxConfig,
     session: Optional[Any] = None,
+    cancel_check: Optional[CancelCheck] = None,
 ) -> AckResponse:
     """Acknowledge a completely validated and published PLY result."""
 
+    _check_cancel(cancel_check)
     if not final_path.is_file() or final_path.stat().st_size != metadata.file_size:
         raise TransferError(f"cannot ACK missing or invalid result file: {final_path}")
     payload = {
@@ -192,10 +241,14 @@ def acknowledge_result(
     }
     client = session or direct_session()
     try:
-        response = client.post(
+        response = _cancellable_request(
+            client,
+            "post",
             f"{config.server_url}/result/{quote(metadata.task_id, safe='')}/ack",
+            config.request_timeout_seconds,
+            cancel_check,
             json=payload,
-            timeout=config.request_timeout_seconds,
+            headers={"Idempotency-Key": metadata.task_id},
         )
         response.raise_for_status()
         ack = AckResponse.model_validate(response.json())
@@ -221,17 +274,37 @@ def run_transfer(
     if "127.0.0.1" in config.server_url or "localhost" in config.server_url:
         raise TransferError("server_url must contain the actual WSL IP, not localhost")
     package: TaskPackageResult = build_configured_task_package(
-        capture_dir, config_path, selected_images
+        capture_dir,
+        config_path,
+        selected_images,
+        cancel_check=cancel_check,
     )
     if progress_callback:
         progress_callback(f"capture_id={package.capture_id}")
-    uploaded: TaskUploadResult = upload_staged_task(package.staging_dir, config_path, session)
+    uploaded: TaskUploadResult = upload_staged_task(
+        package.staging_dir,
+        config_path,
+        session,
+        cancel_check=cancel_check,
+    )
     if progress_callback:
         progress_callback(f"task_id={uploaded.task_id} upload_status={uploaded.upload_response.status}")
     poll_status(uploaded.task_id, package.capture_id, config, session, cancel_check, progress_callback)
-    metadata = get_ply_metadata(uploaded.task_id, package.capture_id, config, session)
+    metadata = get_ply_metadata(
+        uploaded.task_id,
+        package.capture_id,
+        config,
+        session,
+        cancel_check,
+    )
     final_path = download_ply(metadata, config, session, cancel_check, progress_callback)
-    ack = acknowledge_result(metadata, final_path, config, session)
+    ack = acknowledge_result(
+        metadata,
+        final_path,
+        config,
+        session,
+        cancel_check,
+    )
     if progress_callback:
         progress_callback(f"final_path={final_path} sha256={metadata.sha256} ack={ack.message_type}")
     return final_path
@@ -278,6 +351,40 @@ def _require_identity(
 def _check_cancel(cancel_check: Optional[CancelCheck]) -> None:
     if cancel_check and cancel_check():
         raise TransferError("transfer cancelled")
+
+
+def _cancellable_request(
+    client: Any,
+    method: str,
+    url: str,
+    timeout_seconds: float,
+    cancel_check: Optional[CancelCheck],
+    **kwargs,
+):
+    """Retry timeout observation windows inside one overall deadline."""
+
+    deadline = time.monotonic() + max(0.1, float(timeout_seconds))
+    request = getattr(client, method)
+    while True:
+        _check_cancel(cancel_check)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise requests.Timeout(
+                f"{method.upper()} {url} exceeded {timeout_seconds}s"
+            )
+        try:
+            return request(
+                url,
+                timeout=network_timeout(
+                    min(1.0, remaining),
+                    read_cap=1.0,
+                ),
+                **kwargs,
+            )
+        except requests.Timeout:
+            _check_cancel(cancel_check)
+            if time.monotonic() >= deadline:
+                raise
 
 
 def _interruptible_wait(seconds: float, cancel_check: Optional[CancelCheck]) -> None:

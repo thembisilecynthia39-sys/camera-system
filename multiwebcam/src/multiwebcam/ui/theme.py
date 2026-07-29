@@ -132,6 +132,9 @@ def app_stylesheet() -> str:
             font-family: "Inter", "Noto Sans CJK SC", "Noto Sans", sans-serif;
             font-size: {TypeScale.BODY}px;
         }}
+        QLabel {{
+            background: transparent;
+        }}
         QMainWindow,
         QStackedWidget {{
             background: {Palette.BACKGROUND};
@@ -514,6 +517,43 @@ def app_stylesheet() -> str:
             font-family: "JetBrains Mono", "DejaVu Sans Mono", monospace;
             font-size: 12px;
         }}
+        QProgressBar {{
+            min-height: 18px;
+            max-height: 18px;
+            background: {Palette.SURFACE_SUNKEN};
+            color: {Palette.TEXT};
+            border: 1px solid {Palette.BORDER_STRONG};
+            border-radius: 9px;
+            text-align: center;
+            font-size: {TypeScale.CAPTION}px;
+            font-weight: 700;
+        }}
+        QProgressBar::chunk {{
+            background: {Palette.INTERACTIVE_PRESSED};
+            border-radius: 8px;
+        }}
+        QWidget#angleSteps {{
+            background: transparent;
+        }}
+        QLabel#angleStep {{
+            min-height: 25px;
+            background: {Palette.SURFACE_SUNKEN};
+            color: {Palette.TEXT_FAINT};
+            border: 1px solid {Palette.BORDER};
+            border-radius: 6px;
+            font-size: {TypeScale.CAPTION}px;
+            font-weight: 600;
+        }}
+        QLabel#angleStep[state="current"] {{
+            background: {Palette.ACCENT_SURFACE};
+            color: {Palette.INTERACTIVE_HOVER};
+            border-color: {Palette.ACCENT_BORDER};
+        }}
+        QLabel#angleStep[state="done"] {{
+            background: {Palette.SUCCESS_SURFACE};
+            color: {Palette.SUCCESS};
+            border-color: {Palette.SUCCESS_BORDER};
+        }}
         QLineEdit,
         QComboBox,
         QSpinBox,
@@ -826,7 +866,8 @@ def app_stylesheet() -> str:
             border: 1px solid {Palette.BORDER};
             border-radius: {Radius.CONTROL}px;
         }}
-        QFrame#dashboardCard {{
+        QFrame#dashboardCard,
+        QFrame#transferCard {{
             background: {Palette.SURFACE};
             border: 1px solid {Palette.BORDER};
             border-radius: {Radius.CARD}px;

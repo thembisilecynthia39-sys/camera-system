@@ -10,7 +10,7 @@ from typing import Literal
 class RecordingSettings:
     """Recording backend configuration."""
 
-    backend: Literal["pyav", "gstreamer"] = "pyav"
+    backend: Literal["pyav", "gstreamer"] = "gstreamer"
     codec: str = "h264"
     fps: int = 30
     jetson_encoder: str = "nvv4l2h264enc"

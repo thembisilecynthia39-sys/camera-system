@@ -124,10 +124,13 @@ def _score_small_target_area(area_ratio: float) -> float:
     return max(0.0, min(1.0, 1.0 - abs(area_ratio - target) / tolerance))
 
 
-def create_detector(settings: InferenceSettings) -> ObjectDetector:
+def create_detector(
+    settings: InferenceSettings,
+    cancel_event=None,
+) -> ObjectDetector:
     """Create the requested detector backend."""
     if settings.backend == "subprocess":
-        return SubprocessObjectDetector(settings)
+        return SubprocessObjectDetector(settings, cancel_event=cancel_event)
     if settings.backend == "ultralytics_tensorrt":
         return UltralyticsTensorRTDetector(settings)
     return HeuristicObjectDetector()

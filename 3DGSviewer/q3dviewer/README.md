@@ -158,6 +158,12 @@ Lower-quality features can also be selected independently with
 `--max-gaussians`, `--no-sort`, and `--dc-only`. Run
 `gaussian_viewer --help` for all options.
 
+When embedded by Camera System on Jetson, these quality levels switch
+automatically: mouse/keyboard interaction pauses depth sorting, evaluates only
+DC color, and draws at most 120,000 splats. Releasing the controls performs one
+full-quality SH and depth-sorted render, then the viewer stops continuous idle
+repainting to reduce GPU load.
+
 ![Gaussian Viewer GIF](https://qiita-image-store.s3.ap-northeast-1.amazonaws.com/0/149168/441e6f5a-214d-f7c1-11bf-5fa79e63b38e.gif)
 
 ### 5. LiDAR-LiDAR Calibration Tools

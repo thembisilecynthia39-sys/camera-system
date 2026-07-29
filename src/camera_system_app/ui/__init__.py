@@ -1,0 +1,2 @@
+"""Qt Widgets presentation layer."""
+

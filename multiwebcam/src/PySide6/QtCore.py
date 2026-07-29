@@ -25,3 +25,11 @@ if not hasattr(Qt, "ConnectionType"):
         QueuedConnection=Qt.QueuedConnection,
         BlockingQueuedConnection=Qt.BlockingQueuedConnection,
     )
+if not hasattr(Qt, "FocusPolicy"):
+    Qt.FocusPolicy = _EnumNamespace(ClickFocus=Qt.ClickFocus)
+if not hasattr(Qt, "MouseButton"):
+    Qt.MouseButton = _EnumNamespace(
+        LeftButton=Qt.LeftButton,
+        RightButton=Qt.RightButton,
+        MiddleButton=Qt.MiddleButton,
+    )

@@ -69,12 +69,16 @@ class CaptureGuidanceTracker:
         packets: dict[str, FramePacket],
         quality: CaptureSetQuality,
         selected_angle_deg: int,
+        *,
+        check_matchability: bool = True,
     ) -> CaptureGuidance:
         angle = _normalize_angle(selected_angle_deg, self._required_angles)
         completed_angles = tuple(angle_deg for angle_deg in self._required_angles if angle_deg in self._captures)
         next_angle_deg = self._next_angle()
         progress_percent = self._progress_percent()
-        warning = self._target_warning(quality) or self._matchability_warning(angle, packets, quality)
+        warning = self._target_warning(quality)
+        if warning is None and check_matchability:
+            warning = self._matchability_warning(angle, packets, quality)
         readiness_label = _readiness_label(quality.readiness_percent)
         ready_to_capture = quality.readiness_percent >= _READINESS_MIN_CAPTURE and self._target_detected(quality)
         suggested_retake_angle = self._retake_angle()
@@ -167,7 +171,12 @@ class CaptureGuidanceTracker:
             representative = _representative_gray_frame(packets, quality)
             if representative is not None:
                 self._reference_frames[angle] = representative
-        return self.evaluate(packets, quality, angle)
+        return self.evaluate(
+            packets,
+            quality,
+            angle,
+            check_matchability=False,
+        )
 
     def _next_angle(self) -> int | None:
         for angle in self._required_angles:

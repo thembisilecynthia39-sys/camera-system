@@ -1,0 +1,21 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Camera System
+Name[zh_CN]=边端 3DGS 重建
+Comment=Eight-view capture, reconstruction and Gaussian result viewer
+Comment[zh_CN]=八视角采集、传输重建与 Gaussian 结果查看
+Exec="@APP_ROOT@/scripts/jetson/run.sh"
+Icon=@ICON_PATH@
+Path=@APP_ROOT@
+Terminal=false
+StartupNotify=true
+StartupWMClass=camera-system
+Categories=Graphics;Photography;
+Keywords=camera;3DGS;Jetson;reconstruction;
+Actions=Diagnose;
+
+[Desktop Action Diagnose]
+Name=Environment diagnostics
+Name[zh_CN]=环境诊断
+Exec="@APP_ROOT@/scripts/jetson/run.sh" --diagnose-dialog
