@@ -3,8 +3,9 @@
 from pathlib import Path
 import re
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QPalette
+from PySide6.QtCore import QPoint, QPointF, Qt
+from PySide6.QtGui import QPalette, QWheelEvent
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QLabel, QPushButton, QVBoxLayout, QWidget
 
 from camera_system_app.bootstrap import build_context
@@ -56,6 +57,19 @@ def _contrast(first, second):
         reverse=True,
     )
     return (light + 0.05) / (dark + 0.05)
+
+
+def _wheel_up_event():
+    return QWheelEvent(
+        QPointF(10, 10),
+        QPointF(10, 10),
+        QPoint(0, 0),
+        QPoint(0, 120),
+        Qt.NoButton,
+        Qt.NoModifier,
+        Qt.NoScrollPhase,
+        False,
+    )
 
 
 def test_semantic_text_pairs_meet_wcag_contrast():
@@ -316,6 +330,79 @@ def test_settings_groups_scroll_without_changing_values(
         == context.settings.wsl_service_url
     )
     assert page._save_button.isVisibleTo(page)
+
+
+def test_timeout_spin_boxes_ignore_wheel_without_focus(
+    tmp_path, monkeypatch, qapp
+):
+    for name in ("CONFIG", "DATA", "STATE", "CACHE"):
+        monkeypatch.setenv("XDG_{}_HOME".format(name), str(tmp_path / name.lower()))
+    context = build_context(project_root=str(PROJECT_ROOT))
+    page = SettingsPage(context.settings, str(context.paths.config_file))
+    page.resize(900, 680)
+    page.show()
+    page._save_button.setFocus()
+    qapp.processEvents()
+    controls = (
+        (page._upload_timeout, 10),
+        (page._request_timeout, 11),
+        (page._poll_interval, 1.5),
+        (page._reconstruction_timeout, 12),
+        (page._download_timeout, 13),
+    )
+
+    for control, initial in controls:
+        control.setValue(initial)
+        qapp.sendEvent(control, _wheel_up_event())
+        assert control.value() == initial
+
+    page.close()
+
+
+def test_timeout_spin_box_accepts_wheel_after_mouse_selection(
+    tmp_path, monkeypatch, qapp
+):
+    for name in ("CONFIG", "DATA", "STATE", "CACHE"):
+        monkeypatch.setenv("XDG_{}_HOME".format(name), str(tmp_path / name.lower()))
+    context = build_context(project_root=str(PROJECT_ROOT))
+    page = SettingsPage(context.settings, str(context.paths.config_file))
+    page.resize(900, 680)
+    page.show()
+    control = page._upload_timeout
+    control.setValue(10)
+    QTest.mouseClick(
+        control,
+        Qt.LeftButton,
+        pos=QPoint(10, control.height() // 2),
+    )
+    qapp.processEvents()
+
+    qapp.sendEvent(control, _wheel_up_event())
+
+    assert control.hasFocus()
+    assert control.value() == 11
+    page.close()
+
+
+def test_timeout_spin_box_ignores_wheel_after_keyboard_focus(
+    tmp_path, monkeypatch, qapp
+):
+    for name in ("CONFIG", "DATA", "STATE", "CACHE"):
+        monkeypatch.setenv("XDG_{}_HOME".format(name), str(tmp_path / name.lower()))
+    context = build_context(project_root=str(PROJECT_ROOT))
+    page = SettingsPage(context.settings, str(context.paths.config_file))
+    page.resize(900, 680)
+    page.show()
+    control = page._upload_timeout
+    control.setValue(10)
+    control.setFocus(Qt.TabFocusReason)
+    qapp.processEvents()
+
+    qapp.sendEvent(control, _wheel_up_event())
+
+    assert control.hasFocus()
+    assert control.value() == 10
+    page.close()
 
 
 def test_diagnostic_metrics_follow_report(qapp):
