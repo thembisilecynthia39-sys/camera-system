@@ -20,8 +20,8 @@ from PySide6.QtWidgets import (
 from camera_system_app.config.settings import AppSettings
 from camera_system_app.ui.pages.base import BasePage
 from camera_system_app.ui.widgets import (
-    FocusWheelDoubleSpinBox,
-    FocusWheelSpinBox,
+    SafeDoubleSpinBox,
+    SafeSpinBox,
     StatusBanner,
 )
 
@@ -126,22 +126,22 @@ class SettingsPage(BasePage):
         self._log_level.setCurrentText(settings.log_level)
         self._max_ply_size_bytes = settings.max_ply_size_bytes
         self._start_maximized = settings.start_maximized
-        self._upload_timeout = FocusWheelSpinBox()
+        self._upload_timeout = SafeSpinBox()
         self._upload_timeout.setRange(1, 86400)
         self._upload_timeout.setValue(settings.upload_timeout_seconds)
-        self._request_timeout = FocusWheelSpinBox()
+        self._request_timeout = SafeSpinBox()
         self._request_timeout.setRange(1, 86400)
         self._request_timeout.setValue(settings.request_timeout_seconds)
-        self._poll_interval = FocusWheelDoubleSpinBox()
+        self._poll_interval = SafeDoubleSpinBox()
         self._poll_interval.setRange(0.1, 3600.0)
         self._poll_interval.setValue(settings.status_poll_interval_seconds)
         self._poll_interval.setSuffix(" 秒")
-        self._reconstruction_timeout = FocusWheelSpinBox()
+        self._reconstruction_timeout = SafeSpinBox()
         self._reconstruction_timeout.setRange(1, 604800)
         self._reconstruction_timeout.setValue(
             settings.reconstruction_timeout_seconds
         )
-        self._download_timeout = FocusWheelSpinBox()
+        self._download_timeout = SafeSpinBox()
         self._download_timeout.setRange(1, 86400)
         self._download_timeout.setValue(settings.download_timeout_seconds)
 

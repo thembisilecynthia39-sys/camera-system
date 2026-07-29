@@ -388,14 +388,15 @@ def test_timeout_spin_boxes_ignore_wheel_without_focus(
     )
 
     for control, initial in controls:
-        control.setValue(initial)
-        qapp.sendEvent(control, _wheel_up_event())
-        assert control.value() == initial
+        for target in (control, control.lineEdit()):
+            control.setValue(initial)
+            qapp.sendEvent(target, _wheel_up_event())
+            assert control.value() == initial
 
     page.close()
 
 
-def test_timeout_spin_box_accepts_wheel_after_mouse_selection(
+def test_timeout_spin_box_ignores_wheel_after_mouse_selection(
     tmp_path, monkeypatch, qapp
 ):
     for name in ("CONFIG", "DATA", "STATE", "CACHE"):
@@ -413,10 +414,12 @@ def test_timeout_spin_box_accepts_wheel_after_mouse_selection(
     )
     qapp.processEvents()
 
-    qapp.sendEvent(control, _wheel_up_event())
+    for target in (control, control.lineEdit()):
+        control.setValue(10)
+        qapp.sendEvent(target, _wheel_up_event())
+        assert control.value() == 10
 
     assert control.hasFocus()
-    assert control.value() == 11
     page.close()
 
 
@@ -438,6 +441,30 @@ def test_timeout_spin_box_ignores_wheel_after_keyboard_focus(
 
     assert control.hasFocus()
     assert control.value() == 10
+    page.close()
+
+
+def test_timeout_spin_box_accepts_direct_entry_after_selection(
+    tmp_path, monkeypatch, qapp
+):
+    for name in ("CONFIG", "DATA", "STATE", "CACHE"):
+        monkeypatch.setenv("XDG_{}_HOME".format(name), str(tmp_path / name.lower()))
+    context = build_context(project_root=str(PROJECT_ROOT))
+    page = SettingsPage(context.settings, str(context.paths.config_file))
+    page.resize(900, 680)
+    page.show()
+    control = page._upload_timeout
+    editor = control.lineEdit()
+    page._scroll.ensureWidgetVisible(control)
+    qapp.processEvents()
+    QTest.mouseClick(editor, Qt.LeftButton)
+    editor.selectAll()
+
+    QTest.keyClicks(editor, "25")
+    QTest.keyClick(editor, Qt.Key_Return)
+
+    assert editor.hasFocus()
+    assert control.value() == 25
     page.close()
 
 
