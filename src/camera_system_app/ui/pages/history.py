@@ -62,7 +62,7 @@ class HistoryPage(BasePage):
         self.table.setWordWrap(False)
         self.table.setTextElideMode(Qt.ElideMiddle)
         self.table.verticalHeader().setVisible(False)
-        self.table.verticalHeader().setDefaultSectionSize(58)
+        self.table.verticalHeader().setDefaultSectionSize(68)
 
         header = self.table.horizontalHeader()
         header.setHighlightSections(False)
@@ -172,7 +172,7 @@ class HistoryPage(BasePage):
             more.setPopupMode(QToolButton.InstantPopup)
             action_layout.addWidget(more)
             self.table.setCellWidget(row, 5, actions)
-            self.table.setRowHeight(row, 58)
+            self.table.setRowHeight(row, 68)
 
     def _select_row(self, row: int, _column: int) -> None:
         item = self.table.item(row, 0)
@@ -191,7 +191,7 @@ class HistoryPage(BasePage):
         container = QWidget()
         container.setObjectName("historyActions")
         layout = QVBoxLayout(container)
-        layout.setContentsMargins(8, 10, 8, 10)
+        layout.setContentsMargins(8, 8, 8, 8)
         badge = QLabel(_STATE_LABELS.get(state, state.value))
         badge.setObjectName("taskStateBadge")
         badge.setProperty("state", _state_colour(state))

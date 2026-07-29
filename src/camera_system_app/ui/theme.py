@@ -341,8 +341,7 @@ _QSS = Template(
         background: transparent;
     }
     QPushButton#tablePrimaryAction {
-        min-height: 32px;
-        max-height: 32px;
+        min-height: 36px;
         padding: 0 $space_3;
         background: $light_interactive_subtle;
         color: $light_interactive;
@@ -377,6 +376,7 @@ _QSS = Template(
         color: $light_interactive;
     }
     QLabel#taskStateBadge {
+        min-height: 36px;
         border-radius: $radius_md;
         padding: $space_1 $space_2;
         font-size: $font_caption;

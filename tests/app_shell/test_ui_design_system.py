@@ -5,7 +5,7 @@ import re
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QPalette
-from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QLabel, QPushButton, QVBoxLayout, QWidget
 
 from camera_system_app.bootstrap import build_context
 from camera_system_app.domain import (
@@ -13,6 +13,7 @@ from camera_system_app.domain import (
     DiagnosticReport,
     DiagnosticStatus,
     ReconstructionJob,
+    ReconstructionState,
 )
 from camera_system_app.ui.design_tokens import SEMANTIC_DARK, SEMANTIC_LIGHT
 from camera_system_app.ui.main_window import MainWindow
@@ -264,6 +265,41 @@ def test_history_switches_between_empty_state_and_table(qapp, tmp_path):
 
     assert page.table.isVisibleTo(page)
     assert not page._empty_state.isVisibleTo(page)
+
+
+def test_history_row_controls_do_not_clip_text(qapp, tmp_path):
+    previous_stylesheet = qapp.styleSheet()
+    try:
+        qapp.setStyleSheet(application_stylesheet())
+        capture = tmp_path / "capture"
+        capture.mkdir()
+        page = HistoryPage()
+        page.set_jobs(
+            [
+                ReconstructionJob(
+                    "failed-job",
+                    "capture",
+                    capture,
+                    state=ReconstructionState.FAILED,
+                ),
+                ReconstructionJob("ready-job", "capture", capture),
+            ]
+        )
+        page.resize(1200, 500)
+        page.show()
+        qapp.processEvents()
+
+        for row in range(2):
+            state_host = page.table.cellWidget(row, 2)
+            badge = state_host.findChild(QLabel, "taskStateBadge")
+            actions = page.table.cellWidget(row, 5)
+            primary = actions.findChild(QPushButton, "tablePrimaryAction")
+
+            assert badge.height() >= badge.sizeHint().height()
+            assert primary.height() >= primary.sizeHint().height()
+    finally:
+        page.close()
+        qapp.setStyleSheet(previous_stylesheet)
 
 
 def test_settings_groups_scroll_without_changing_values(
