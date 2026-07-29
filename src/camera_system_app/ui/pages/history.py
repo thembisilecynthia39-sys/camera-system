@@ -3,6 +3,7 @@
 from datetime import datetime
 
 from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QFrame,
@@ -14,11 +15,11 @@ from PySide6.QtWidgets import (
     QTableWidget,
     QTableWidgetItem,
     QToolButton,
-    QVBoxLayout,
     QWidget,
 )
 
 from camera_system_app.domain import ReconstructionState
+from camera_system_app.ui.design_tokens import SEMANTIC_LIGHT
 from camera_system_app.ui.pages.base import BasePage
 
 
@@ -114,7 +115,7 @@ class HistoryPage(BasePage):
             message_item = self._text_item(message, message)
             self.table.setItem(row, 0, task_item)
             self.table.setItem(row, 1, created_item)
-            self.table.setCellWidget(row, 2, self._state_badge(job.state))
+            self.table.setItem(row, 2, self._state_item(job.state))
             self.table.setItem(row, 3, result_item)
             self.table.setItem(row, 4, message_item)
 
@@ -173,7 +174,10 @@ class HistoryPage(BasePage):
             more.setPopupMode(QToolButton.InstantPopup)
             action_layout.addWidget(more)
             self.table.setCellWidget(row, 5, actions)
-            self.table.setRowHeight(row, 68)
+            self.table.setRowHeight(
+                row,
+                max(68, actions.sizeHint().height() + 16),
+            )
 
     def _select_row(self, row: int, _column: int) -> None:
         item = self.table.item(row, 0)
@@ -188,17 +192,17 @@ class HistoryPage(BasePage):
         return item
 
     @staticmethod
-    def _state_badge(state: ReconstructionState) -> QWidget:
-        container = QWidget()
-        container.setObjectName("historyActions")
-        layout = QVBoxLayout(container)
-        layout.setContentsMargins(8, 8, 8, 8)
-        badge = QLabel(_STATE_LABELS.get(state, state.value))
-        badge.setObjectName("taskStateBadge")
-        badge.setProperty("state", _state_colour(state))
-        badge.setAlignment(Qt.AlignCenter)
-        layout.addWidget(badge)
-        return container
+    def _state_item(state: ReconstructionState) -> QTableWidgetItem:
+        presentation = _state_colour(state)
+        symbol, foreground, background = _STATE_STYLES[presentation]
+        label = _STATE_LABELS.get(state, state.value)
+        item = QTableWidgetItem("{} {}".format(symbol, label))
+        item.setTextAlignment(int(Qt.AlignCenter))
+        item.setForeground(QBrush(QColor(foreground)))
+        item.setBackground(QBrush(QColor(background)))
+        item.setToolTip(label)
+        item.setData(Qt.UserRole, presentation)
+        return item
 
 
 _STATE_LABELS = {
@@ -232,6 +236,35 @@ def _state_colour(state: ReconstructionState) -> str:
     if state is ReconstructionState.READY:
         return "neutral"
     return "active"
+
+
+_STATE_STYLES = {
+    "success": (
+        "✓",
+        SEMANTIC_LIGHT["success"],
+        SEMANTIC_LIGHT["success_background"],
+    ),
+    "danger": (
+        "✕",
+        SEMANTIC_LIGHT["danger"],
+        SEMANTIC_LIGHT["danger_background"],
+    ),
+    "warning": (
+        "△",
+        SEMANTIC_LIGHT["warning"],
+        SEMANTIC_LIGHT["warning_background"],
+    ),
+    "neutral": (
+        "○",
+        SEMANTIC_LIGHT["text_muted"],
+        SEMANTIC_LIGHT["surface_subtle"],
+    ),
+    "active": (
+        "●",
+        SEMANTIC_LIGHT["interactive"],
+        SEMANTIC_LIGHT["interactive_subtle"],
+    ),
+}
 
 
 def _display_datetime(value: str) -> str:

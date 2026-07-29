@@ -375,39 +375,6 @@ _QSS = Template(
         background: $light_interactive_subtle;
         color: $light_interactive;
     }
-    QLabel#taskStateBadge {
-        min-height: 36px;
-        border-radius: $radius_md;
-        padding: $space_1 $space_2;
-        font-size: $font_caption;
-        font-weight: 700;
-    }
-    QLabel#taskStateBadge[state="success"] {
-        background: $light_success_background;
-        color: $light_success;
-        border: 1px solid $light_operational;
-    }
-    QLabel#taskStateBadge[state="danger"] {
-        background: $light_danger_background;
-        color: $light_danger;
-        border: 1px solid $light_danger;
-    }
-    QLabel#taskStateBadge[state="active"] {
-        background: $light_interactive_subtle;
-        color: $light_interactive;
-        border: 1px solid $light_interactive_border;
-    }
-    QLabel#taskStateBadge[state="warning"] {
-        background: $light_warning_background;
-        color: $light_warning;
-        border: 1px solid $light_warning;
-    }
-    QLabel#taskStateBadge[state="neutral"] {
-        background: $light_surface_subtle;
-        color: $light_text_muted;
-        border: 1px solid $light_border;
-    }
-
     QWidget#capturePageSurface,
     QWidget#resultPageSurface,
     QStackedWidget#captureHost {

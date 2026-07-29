@@ -281,7 +281,9 @@ def test_history_switches_between_empty_state_and_table(qapp, tmp_path):
     assert not page._empty_state.isVisibleTo(page)
 
 
-def test_history_row_controls_do_not_clip_text(qapp, tmp_path):
+def test_history_native_status_cells_and_actions_show_complete_text(
+    qapp, tmp_path
+):
     previous_stylesheet = qapp.styleSheet()
     try:
         qapp.setStyleSheet(application_stylesheet())
@@ -303,13 +305,14 @@ def test_history_row_controls_do_not_clip_text(qapp, tmp_path):
         page.show()
         qapp.processEvents()
 
-        for row in range(2):
-            state_host = page.table.cellWidget(row, 2)
-            badge = state_host.findChild(QLabel, "taskStateBadge")
+        expected_statuses = ("✕ 失败", "○ 待上传")
+        for row, expected_status in enumerate(expected_statuses):
+            status_item = page.table.item(row, 2)
             actions = page.table.cellWidget(row, 5)
             primary = actions.findChild(QPushButton, "tablePrimaryAction")
 
-            assert badge.height() >= badge.sizeHint().height()
+            assert page.table.cellWidget(row, 2) is None
+            assert status_item.text() == expected_status
             assert primary.height() >= primary.sizeHint().height()
     finally:
         page.close()
