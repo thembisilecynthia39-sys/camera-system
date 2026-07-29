@@ -151,8 +151,6 @@ def test_history_exposes_retry_and_result_actions(tmp_path, qapp):
     assert "重试" in {button.text() for button in actions.findChildren(QPushButton)}
     assert len(actions.findChildren(QPushButton)) == 1
     assert len(actions.findChildren(QToolButton)) == 1
-    assert page.table.columnWidth(5) >= 180
-    assert page.table.rowHeight(0) >= 58
 
 
 def test_capture_workspace_uses_connected_dark_surface(tmp_path, monkeypatch, qapp):

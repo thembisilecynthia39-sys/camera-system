@@ -316,6 +316,39 @@ def test_history_row_controls_do_not_clip_text(qapp, tmp_path):
         qapp.setStyleSheet(previous_stylesheet)
 
 
+def test_history_action_column_is_visible_at_minimum_width(qapp, tmp_path):
+    previous_stylesheet = qapp.styleSheet()
+    try:
+        qapp.setStyleSheet(application_stylesheet())
+        capture = tmp_path / "capture"
+        capture.mkdir()
+        page = HistoryPage()
+        page.set_jobs(
+            [
+                ReconstructionJob(
+                    "failed-task-20260729",
+                    "capture",
+                    capture,
+                    state=ReconstructionState.FAILED,
+                )
+            ]
+        )
+        page.resize(776, 500)
+        page.show()
+        qapp.processEvents()
+
+        action_right = (
+            page.table.columnViewportPosition(5)
+            + page.table.columnWidth(5)
+        )
+
+        assert action_right <= page.table.viewport().width()
+        assert page.table.horizontalScrollBar().maximum() == 0
+    finally:
+        page.close()
+        qapp.setStyleSheet(previous_stylesheet)
+
+
 def test_settings_groups_scroll_without_changing_values(
     tmp_path, monkeypatch, qapp
 ):
