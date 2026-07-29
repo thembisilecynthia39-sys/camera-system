@@ -2,11 +2,13 @@
 
 ## Objective
 
-Fix two desktop interaction defects without changing reconstruction or settings
+Fix three desktop interaction defects without changing reconstruction or settings
 data semantics:
 
 1. History status badges and primary row actions must not clip Chinese text.
 2. Timeout spin boxes must not change while the user scrolls the settings page.
+3. Camera-grid fullscreen mode must always provide a keyboard exit path and
+   restore the previous maximized/windowed state.
 
 ## Root causes
 
@@ -47,6 +49,18 @@ request, polling, reconstruction, and download timeout values.
 - Apply the protected widgets only to timeout and polling fields. Other controls
   keep their existing behavior.
 
+### Fullscreen lifecycle
+
+- `GridView` owns its fullscreen button and keyboard shortcuts.
+- `Esc` exits fullscreen from any focused child; `F11` toggles fullscreen.
+- Shortcuts use application scope so a camera tile, combo box, or editor cannot
+  trap the exit key.
+- Before entering fullscreen, remember whether the top-level window was
+  maximized.
+- Exiting restores maximized state when appropriate; otherwise it restores a
+  normal window.
+- The toolbar button text always matches the actual window state.
+
 ## Accessibility and responsive behavior
 
 - Text-bearing row controls must be at least as tall as their Qt size hints.
@@ -63,6 +77,9 @@ request, polling, reconstruction, and download timeout values.
   timeout values never change.
 - Click selection followed by direct keyboard input proves intentional editing
   remains available.
+- A real top-level test enters fullscreen, triggers the Escape shortcut, and
+  verifies the window is no longer fullscreen and the button reads `全屏`.
+- A maximized-window test verifies fullscreen exit restores maximized state.
 - Existing history signal/action and settings serialization tests remain green.
 - Offscreen screenshots at 1600×900 and 1024×680 are inspected.
 - The root, Tx_Rx, and multiwebcam suites pass before publication.

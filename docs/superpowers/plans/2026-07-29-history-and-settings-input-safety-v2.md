@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Eliminate nested status-cell clipping and make wheel input incapable of changing timeout configuration.
+**Goal:** Eliminate nested status-cell clipping, make wheel input incapable of changing timeout configuration, and guarantee fullscreen exit.
 
 **Architecture:** Store history status as native table items instead of nested label widgets, while retaining row action widgets with size-derived row heights. Replace focus-dependent wheel admission with safe spin boxes that reject wheel changes at both the spin-box and embedded-editor event boundaries.
 
@@ -15,6 +15,7 @@
 - Timeout and polling values must never change from a wheel event.
 - Status cells must expose complete symbol-and-text labels through the table model.
 - Do not add dependencies or replace the JetPack Qt compatibility stack.
+- Escape exits camera fullscreen and restores the prior maximized/windowed state.
 
 ---
 
@@ -156,6 +157,60 @@ git commit -m "fix: disable wheel edits for timeout settings"
 ```
 
 ### Task 3: Visual, regression, and publication verification
+
+**Files:**
+- Modify: `multiwebcam/tests/ui/test_imports.py`
+- Modify: `multiwebcam/src/multiwebcam/ui/views/grid_view.py`
+
+**Interfaces:**
+- Produces: application-scoped Escape and F11 shortcuts owned by `GridView`.
+- Preserves: `_toggle_fullscreen()` button behavior and the top-level window's
+  previous maximized/windowed state.
+
+- [ ] **Step 1: Write failing fullscreen tests**
+
+Place `GridView` in a real top-level `QWidget`, show it, call
+`_toggle_fullscreen()`, then activate the Escape shortcut and assert:
+
+```python
+assert not window.isFullScreen()
+assert view._fullscreen_btn.text() == "全屏"
+```
+
+Repeat from a maximized starting state and assert `window.isMaximized()` after
+exit.
+
+- [ ] **Step 2: Verify RED**
+
+```bash
+(cd multiwebcam && LD_PRELOAD=/lib/aarch64-linux-gnu/libGLdispatch.so.0 \
+  PYTHONPATH=src .venv-jetson/bin/python -m pytest -q \
+  tests/ui/test_imports.py -k "fullscreen")
+```
+
+Expected: failure because no Escape/F11 shortcut exists and exit always calls
+`showNormal()`.
+
+- [ ] **Step 3: Implement fullscreen state management**
+
+Create application-scoped `QShortcut` instances for Escape and F11. Split
+fullscreen handling into `_set_fullscreen(enabled)` and
+`_exit_fullscreen()`. Record `window.isMaximized()` before entering, restore
+with `showMaximized()` or `showNormal()`, and synchronize button text in both
+paths.
+
+- [ ] **Step 4: Verify GREEN and commit**
+
+```bash
+(cd multiwebcam && LD_PRELOAD=/lib/aarch64-linux-gnu/libGLdispatch.so.0 \
+  PYTHONPATH=src .venv-jetson/bin/python -m pytest -q \
+  tests/ui/test_imports.py -k "fullscreen")
+git add multiwebcam/tests/ui/test_imports.py \
+  multiwebcam/src/multiwebcam/ui/views/grid_view.py
+git commit -m "fix: make camera fullscreen escapable"
+```
+
+### Task 4: Visual, regression, and publication verification
 
 **Files:**
 - Update: `docs/images/ui/history.png`
