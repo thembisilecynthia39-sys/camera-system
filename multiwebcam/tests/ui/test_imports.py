@@ -4,6 +4,7 @@ import numpy as np
 import pytest
 from PySide6.QtCore import QPoint, QPointF, Qt
 from PySide6.QtGui import QPixmap, QWheelEvent
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QLabel, QPushButton
 
 from multiwebcam.profiles import SourceProfile
@@ -101,6 +102,38 @@ def test_grid_view_shows_inference_inactive(qapp):
 
     labels = view.findChildren(QLabel)
     assert any("AI: 启发式 | 未启用" in label.text() for label in labels)
+
+
+def test_grid_view_escape_exits_fullscreen_and_syncs_button(qapp):
+    view = GridView()
+    view.show()
+    qapp.processEvents()
+    view._toggle_fullscreen()
+    qapp.processEvents()
+    assert view.isFullScreen()
+
+    QTest.keyClick(view, Qt.Key_Escape)
+    qapp.processEvents()
+
+    assert not view.isFullScreen()
+    assert view._fullscreen_btn.text() == "全屏"
+    view.close()
+
+
+def test_grid_view_fullscreen_exit_restores_maximized_state(qapp):
+    view = GridView()
+    view.showMaximized()
+    qapp.processEvents()
+    assert view.isMaximized()
+    view._toggle_fullscreen()
+    qapp.processEvents()
+
+    QTest.keyClick(view, Qt.Key_Escape)
+    qapp.processEvents()
+
+    assert not view.isFullScreen()
+    assert view.isMaximized()
+    view.close()
 
 
 def test_grid_view_exposes_keyboard_accessible_staging_upload_action(qapp):

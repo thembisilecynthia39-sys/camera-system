@@ -6,7 +6,13 @@ from dataclasses import replace
 from pathlib import Path
 
 from PySide6.QtCore import QSize, Qt, QTime, QTimer, Signal
-from PySide6.QtGui import QIcon, QPixmap, QRegularExpressionValidator, QResizeEvent
+from PySide6.QtGui import (
+    QIcon,
+    QKeySequence,
+    QPixmap,
+    QRegularExpressionValidator,
+    QResizeEvent,
+)
 from PySide6.QtWidgets import (
     QButtonGroup,
     QFrame,
@@ -18,6 +24,7 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QScrollArea,
+    QShortcut,
     QSizePolicy,
     QStackedWidget,
     QTextEdit,
@@ -208,6 +215,15 @@ class GridView(QWidget):
         self._fullscreen_btn = QPushButton("全屏")
         self._fullscreen_btn.setObjectName("toolbarButton")
         self._fullscreen_btn.clicked.connect(self._toggle_fullscreen)
+        self._fullscreen_restore_maximized = False
+        self._escape_fullscreen_shortcut = QShortcut(
+            QKeySequence(Qt.Key_Escape),
+            self,
+        )
+        self._escape_fullscreen_shortcut.setContext(Qt.ApplicationShortcut)
+        self._escape_fullscreen_shortcut.activated.connect(
+            self._exit_fullscreen
+        )
         content_header.addWidget(self._grid_mode_btn)
         content_header.addWidget(self._layout_combo)
         content_header.addWidget(self._fullscreen_btn)
@@ -794,12 +810,24 @@ class GridView(QWidget):
 
     def _toggle_fullscreen(self) -> None:
         window = self.window()
-        if window.isFullScreen():
-            window.showNormal()
-            self._fullscreen_btn.setText("全屏")
-        else:
+        self._set_fullscreen(not window.isFullScreen())
+
+    def _set_fullscreen(self, enabled: bool) -> None:
+        window = self.window()
+        if enabled:
+            self._fullscreen_restore_maximized = window.isMaximized()
             window.showFullScreen()
             self._fullscreen_btn.setText("退出全屏")
+            return
+        if self._fullscreen_restore_maximized:
+            window.showMaximized()
+        else:
+            window.showNormal()
+        self._fullscreen_btn.setText("全屏")
+
+    def _exit_fullscreen(self) -> None:
+        if self.window().isFullScreen():
+            self._set_fullscreen(False)
 
     def load_model(self, path: str) -> None:
         if self._capture_only:

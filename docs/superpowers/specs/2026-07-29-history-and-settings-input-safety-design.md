@@ -52,7 +52,7 @@ request, polling, reconstruction, and download timeout values.
 ### Fullscreen lifecycle
 
 - `GridView` owns its fullscreen button and keyboard shortcuts.
-- `Esc` exits fullscreen from any focused child; `F11` toggles fullscreen.
+- `Esc` exits fullscreen from any focused child.
 - Shortcuts use application scope so a camera tile, combo box, or editor cannot
   trap the exit key.
 - Before entering fullscreen, remember whether the top-level window was

@@ -163,7 +163,7 @@ git commit -m "fix: disable wheel edits for timeout settings"
 - Modify: `multiwebcam/src/multiwebcam/ui/views/grid_view.py`
 
 **Interfaces:**
-- Produces: application-scoped Escape and F11 shortcuts owned by `GridView`.
+- Produces: an application-scoped Escape shortcut owned by `GridView`.
 - Preserves: `_toggle_fullscreen()` button behavior and the top-level window's
   previous maximized/windowed state.
 
@@ -193,7 +193,7 @@ Expected: failure because no Escape/F11 shortcut exists and exit always calls
 
 - [ ] **Step 3: Implement fullscreen state management**
 
-Create application-scoped `QShortcut` instances for Escape and F11. Split
+Create an application-scoped `QShortcut` for Escape. Split
 fullscreen handling into `_set_fullscreen(enabled)` and
 `_exit_fullscreen()`. Record `window.isMaximized()` before entering, restore
 with `showMaximized()` or `showNormal()`, and synchronize button text in both
