@@ -29,6 +29,21 @@ from camera_system_app.domain.errors import (
     normalize_error,
     user_message,
 )
+from camera_system_app.domain.viewer import (
+    AppearanceSettings,
+    CameraPose,
+    CameraShot,
+    CameraTimeline,
+    DisplayMode,
+    DisplaySettings,
+    OutputKind,
+    QualityPreset,
+    RenderSettings,
+    SphereStyle,
+    ViewerProject,
+    ViewerValidationError,
+    validate_render_settings,
+)
 
 __all__ = [
     "CaptureCompletedEvent",
@@ -52,4 +67,17 @@ __all__ = [
     "TaskValidationError",
     "normalize_error",
     "user_message",
+    "AppearanceSettings",
+    "CameraPose",
+    "CameraShot",
+    "CameraTimeline",
+    "DisplayMode",
+    "DisplaySettings",
+    "OutputKind",
+    "QualityPreset",
+    "RenderSettings",
+    "SphereStyle",
+    "ViewerProject",
+    "ViewerValidationError",
+    "validate_render_settings",
 ]
