@@ -17,6 +17,7 @@ from OpenGL.raw.GL.VERSION.GL_3_1 import glDrawElementsInstanced as raw_glDrawEl
 from OpenGL.raw.GL.VERSION.GL_4_2 import glMemoryBarrier as raw_glMemoryBarrier
 from OpenGL.raw.GL.VERSION.GL_4_3 import glDispatchCompute as raw_glDispatchCompute
 from q3dviewer.utils import set_uniform
+from q3dviewer.custom_items.gaussian_gpu_data import GaussianGpuData
 
 
 def div_round_up(x, y):
@@ -29,9 +30,8 @@ class GaussianItem(BaseItem):
                  max_bitonic_gaussians=1048576,
                  **kwds):
         super().__init__()
+        self.gpu_data = GaussianGpuData(interactive_max_gaussians=120000)
         self.need_updateGS = False
-        self.sh_dim = 0
-        self.gs_data = np.empty([0])
         self.prev_Rz = np.array([np.inf, np.inf, np.inf], dtype=np.float32)
         self.path = os.path.dirname(__file__)
         self.sort_enabled = sort_enabled
@@ -65,6 +65,55 @@ class GaussianItem(BaseItem):
             if sort_backend == 'torch':
                 print(f"[GaussianItem] CUDA sort unavailable, fallback to OpenGL sort: {exc}")
             self.sort = self.openg_sort
+
+    @property
+    def gs_data(self):
+        return self.gpu_data.gs_data
+
+    @gs_data.setter
+    def gs_data(self, value):
+        self.gpu_data.gs_data = np.ascontiguousarray(value, dtype=np.float32)
+        if self.gpu_data.gs_data.ndim == 2 and self.gpu_data.gs_data.shape[1] >= 11:
+            self.gpu_data.sh_dim = self.gpu_data.gs_data.shape[1] - 11
+
+    @property
+    def sh_dim(self):
+        return self.gpu_data.sh_dim
+
+    @sh_dim.setter
+    def sh_dim(self, value):
+        self.gpu_data.sh_dim = int(value)
+
+    @property
+    def need_updateGS(self):
+        return self.gpu_data.need_update
+
+    @need_updateGS.setter
+    def need_updateGS(self, value):
+        self.gpu_data.need_update = bool(value)
+
+    @property
+    def num_sort(self):
+        return self.gpu_data.num_sort
+
+    @num_sort.setter
+    def num_sort(self, value):
+        self.gpu_data.num_sort = int(value)
+
+    def _buffer_property(name):
+        def getter(self):
+            return getattr(self.gpu_data, name)
+
+        def setter(self, value):
+            setattr(self.gpu_data, name, value)
+
+        return property(getter, setter)
+
+    ssbo_gs = _buffer_property('ssbo_gs')
+    ssbo_gi = _buffer_property('ssbo_gi')
+    ssbo_dp = _buffer_property('ssbo_dp')
+    ssbo_pp = _buffer_property('ssbo_pp')
+    ssbo_preview_gi = _buffer_property('ssbo_preview_gi')
 
     def add_setting(self, layout):
         label_render_mode = QLabel("Render Mode:")
@@ -140,12 +189,8 @@ class GaussianItem(BaseItem):
         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0)
         glBindVertexArray(0)
 
-        # add SSBO for gaussian data
-        self.ssbo_gs = glGenBuffers(1)
-        self.ssbo_gi = glGenBuffers(1)
-        self.ssbo_dp = glGenBuffers(1)
-        self.ssbo_pp = glGenBuffers(1)
-        self.ssbo_preview_gi = glGenBuffers(1)
+        # SSBO storage is shared by the splat and sphere render passes.
+        self.gpu_data.initialize_gl()
         if self.sort_backend == 'opengl':
             try:
                 self._sort_query = glGenQueries(1)
@@ -188,67 +233,10 @@ class GaussianItem(BaseItem):
                 self.need_updateGS = False
                 return False
 
-            # compute sorting size
-            self.num_sort = int(2**np.ceil(np.log2(self.gs_data.shape[0])))
-
-            # set input gaussian data
-            glBindBuffer(GL_SHADER_STORAGE_BUFFER, self.ssbo_gs)
-            glBufferData(GL_SHADER_STORAGE_BUFFER, self.gs_data.nbytes,
-                         self.gs_data.reshape(-1), GL_STATIC_DRAW)
-            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, self.ssbo_gs)
-            glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0)
-
-            preview_count = min(
-                self.gs_data.shape[0],
-                max(1, self.interactive_max_gaussians),
-            )
-            preview_indices = np.linspace(
-                0,
-                self.gs_data.shape[0] - 1,
-                preview_count,
-                dtype=np.uint32,
-            )
-            glBindBuffer(GL_SHADER_STORAGE_BUFFER, self.ssbo_preview_gi)
-            glBufferData(
-                GL_SHADER_STORAGE_BUFFER,
-                preview_indices.nbytes,
-                preview_indices,
-                GL_STATIC_DRAW,
-            )
-            glBindBufferBase(
-                GL_SHADER_STORAGE_BUFFER, 4, self.ssbo_preview_gi
-            )
-            glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0)
-            self._preview_count = preview_count
-
-            # set depth for sorting
-            # The bitonic sorter requires a power-of-two buffer. Padding depths
-            # must sort after every real splat or invalid indices can enter the
-            # first gs_num draw instances.
-            depth = np.full(self.num_sort, np.inf, dtype=np.float32)
-            glBindBuffer(GL_SHADER_STORAGE_BUFFER, self.ssbo_dp)
-            glBufferData(GL_SHADER_STORAGE_BUFFER, depth.nbytes,
-                         depth, GL_DYNAMIC_DRAW)
-            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, self.ssbo_dp)
-            glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0)
-
-            # set index for sorting (the index need be initialized)
-            gi = np.arange(self.num_sort, dtype=np.uint32)
-            glBindBuffer(GL_SHADER_STORAGE_BUFFER, self.ssbo_gi)
-            glBufferData(GL_SHADER_STORAGE_BUFFER,
-                         self.num_sort * 4, gi, GL_STATIC_DRAW)
-            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, self.ssbo_gi)
-            glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0)
-
-            # set preprocess buffer
-            # the dim of preprocess data is 12 u(3),
-            # covinv(3), color(3), area(2), alpha(1)
-            glBindBuffer(GL_SHADER_STORAGE_BUFFER, self.ssbo_pp)
-            glBufferData(GL_SHADER_STORAGE_BUFFER,
-                         self.gs_data.shape[0] * 4 * 12,
-                         None, GL_STATIC_DRAW)
-            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, self.ssbo_pp)
-            glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0)
+            self.gpu_data.interactive_max_gaussians = self.interactive_max_gaussians
+            self.gpu_data.upload_gl()
+            self.num_sort = self.gpu_data.num_sort
+            self._preview_count = self.gpu_data.preview_count
 
             glUseProgram(self.prep_program)
             set_uniform(self.prep_program, self.sh_dim, 'data_sh_dim')
@@ -358,6 +346,7 @@ class GaussianItem(BaseItem):
         enabled = bool(enabled)
         self.interactive_preview = enabled
         self.interactive_max_gaussians = max(0, int(max_gaussians))
+        self.gpu_data.interactive_max_gaussians = self.interactive_max_gaussians
         self.sort_suspended = enabled
         # Keep prev_Rz unchanged while sorting is suspended. On the next frame
         # try_sort() then sorts only if orbiting changed the view direction.
@@ -466,40 +455,28 @@ class GaussianItem(BaseItem):
 
     def set_data(self, **kwds):
         if 'gs_data' in kwds:
-            self.need_updateGS = False
             gs_data = kwds.pop('gs_data')
             validated = bool(kwds.pop('validated', False))
-            self.gs_data = np.ascontiguousarray(gs_data, dtype=np.float32)
-            if not validated:
-                finite = np.isfinite(self.gs_data).all(axis=1)
-                if not np.all(finite):
-                    dropped = int(self.gs_data.shape[0] - np.count_nonzero(finite))
-                    print(f"[GaussianItem] Dropped {dropped} non-finite gaussians")
-                    self.gs_data = self.gs_data[finite]
-            self.sh_dim = self.gs_data.shape[-1] - (3 + 4 + 3 + 1)
-            valid_sh_dims = (3, 12, 27, 48)
-            if self.sh_dim not in valid_sh_dims:
-                raise ValueError(
-                    f"Unsupported spherical-harmonics payload: {self.sh_dim} floats; "
-                    f"expected one of {valid_sh_dims}")
+            dropped = self.gpu_data.set_data(gs_data, validated=validated)
+            if dropped:
+                print(f"[GaussianItem] Dropped {dropped} non-finite gaussians")
             self.request_sort()
             self.cuda_pw = None
-            self.need_updateGS = True
 
     def performance_metrics(self):
         """Non-blocking renderer counters for diagnostics/telemetry."""
         return {
-            'gaussians': int(self.gs_data.shape[0]),
+            'gaussians': int(self.gpu_data.count),
             'preview_gaussians': int(
-                getattr(self, '_preview_count', 0)
+                getattr(self, '_preview_count', self.gpu_data.preview_count)
             ),
             'sort_dispatches': int(self.last_sort_dispatches),
             'sort_gpu_ms': self.last_sort_gpu_ms,
             'sort_skipped_large_model': self.sort_skipped_large_model,
             'estimated_gpu_bytes': int(
                 self.gs_data.nbytes
-                + getattr(self, 'num_sort', 0) * 8
-                + self.gs_data.shape[0] * 4 * 12
+                + self.gpu_data.num_sort * 8
+                + self.gpu_data.count * 4 * 12
             ),
         }
 
@@ -508,8 +485,7 @@ class GaussianItem(BaseItem):
         buffers = [
             getattr(self, name, 0)
             for name in (
-                "vbo", "ebo", "ssbo_gs", "ssbo_gi", "ssbo_dp",
-                "ssbo_pp", "ssbo_preview_gi",
+                "vbo", "ebo",
             )
         ]
         buffers = [int(handle) for handle in buffers if handle]
@@ -526,5 +502,6 @@ class GaussianItem(BaseItem):
             if program:
                 glDeleteProgram(int(program))
                 setattr(self, name, None)
+        self.gpu_data.release_gl()
         self.cuda_pw = None
         super().release_gl()
