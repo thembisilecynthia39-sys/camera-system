@@ -8,17 +8,34 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QSplitter,
     QVBoxLayout,
 )
 
 from camera_system_app.ui.pages.base import BasePage
-from camera_system_app.ui.widgets import EmptyState, StatusBanner
+from camera_system_app.ui.widgets import (
+    EmptyState,
+    StatusBanner,
+    ViewerInspector,
+    ViewerToolbar,
+)
 
 
 class ResultViewerPage(BasePage):
     open_local_result_requested = Signal(str)
     select_local_result_requested = Signal()
     reset_view_requested = Signal()
+    fit_view_requested = Signal()
+    display_mode_requested = Signal(str)
+    quality_requested = Signal(str)
+    display_settings_changed = Signal(object)
+    appearance_settings_changed = Signal(object)
+    render_settings_changed = Signal(object)
+    play_requested = Signal()
+    pause_requested = Signal()
+    stop_requested = Signal()
+    presentation_requested = Signal()
+    render_requested = Signal()
 
     def __init__(self, result_root: str, viewer_root: str, parent=None) -> None:
         super().__init__(
@@ -73,6 +90,42 @@ class ResultViewerPage(BasePage):
         self._viewer_frame.setObjectName("contentCard")
         self._viewer_layout = QVBoxLayout(self._viewer_frame)
         self._viewer_layout.setContentsMargins(2, 2, 2, 2)
+        self._toolbar = ViewerToolbar()
+        self._toolbar.setEnabled(False)
+        self._toolbar.open_requested.connect(self.select_local_result_requested.emit)
+        self._toolbar.reset_requested.connect(self.reset_view_requested.emit)
+        self._toolbar.fit_requested.connect(self.fit_view_requested.emit)
+        self._toolbar.display_mode_changed.connect(self.display_mode_requested.emit)
+        self._toolbar.quality_changed.connect(self.quality_requested.emit)
+        self._toolbar.play_requested.connect(self.play_requested.emit)
+        self._toolbar.pause_requested.connect(self.pause_requested.emit)
+        self._toolbar.stop_requested.connect(self.stop_requested.emit)
+        self._toolbar.presentation_requested.connect(self.presentation_requested.emit)
+        self._toolbar.render_requested.connect(self.render_requested.emit)
+        self._viewer_layout.addWidget(self._toolbar)
+
+        self._studio_splitter = QSplitter(Qt.Orientation.Horizontal)
+        self._studio_splitter.setObjectName("viewerStudioSplitter")
+        self._viewport_frame = QFrame()
+        self._viewport_frame.setObjectName("viewerViewport")
+        self._viewport_layout = QVBoxLayout(self._viewport_frame)
+        self._viewport_layout.setContentsMargins(0, 0, 0, 0)
+        self._inspector = ViewerInspector()
+        self._inspector.setVisible(False)
+        self._inspector.display_settings_changed.connect(
+            self.display_settings_changed.emit
+        )
+        self._inspector.appearance_settings_changed.connect(
+            self.appearance_settings_changed.emit
+        )
+        self._inspector.render_settings_changed.connect(
+            self.render_settings_changed.emit
+        )
+        self._studio_splitter.addWidget(self._viewport_frame)
+        self._studio_splitter.addWidget(self._inspector)
+        self._studio_splitter.setStretchFactor(0, 1)
+        self._studio_splitter.setStretchFactor(1, 0)
+        self._viewer_layout.addWidget(self._studio_splitter, 1)
         self._empty_state = EmptyState(
             "◇",
             "尚未加载 Gaussian 结果",
@@ -83,7 +136,7 @@ class ResultViewerPage(BasePage):
             self.select_local_result_requested.emit
         )
         self._empty = self._empty_state
-        self._viewer_layout.addWidget(self._empty, 1)
+        self._viewport_layout.addWidget(self._empty, 1)
         self.layout.addWidget(self._viewer_frame, 1)
 
     def set_result_available(self, local_path: str) -> None:
@@ -104,14 +157,18 @@ class ResultViewerPage(BasePage):
         self._banner.set_status("正在后台解析 PLY：{}".format(path), "success")
         self._action.setEnabled(False)
         self._reset.setEnabled(False)
+        self._toolbar.setEnabled(False)
+        self._inspector.setVisible(False)
 
     def set_viewer_widget(self, widget, path: str, gaussian_count: int) -> None:
         if self._viewer_widget is None:
-            self._viewer_layout.removeWidget(self._empty)
+            self._viewport_layout.removeWidget(self._empty)
             self._empty.hide()
             self._viewer_widget = widget
-            self._viewer_layout.addWidget(widget, 1)
+            self._viewport_layout.addWidget(widget, 1)
         self._viewer_widget.show()
+        self._toolbar.setEnabled(True)
+        self._inspector.setVisible(True)
         self._banner.set_status(
             "已加载 {:,} 个 Gaussian：{}".format(gaussian_count, path),
             "success",

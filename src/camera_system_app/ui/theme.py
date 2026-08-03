@@ -481,6 +481,57 @@ _QSS = Template(
     QWidget#resultPageSurface QPushButton#primaryButton:hover {
         background: $dark_interactive_hover;
     }
+    QWidget#resultPageSurface QWidget#viewerToolbar {
+        background: $dark_surface_raised;
+        border-bottom: 1px solid $dark_border;
+    }
+    QWidget#resultPageSurface QLabel#viewerToolbarLabel {
+        color: $dark_text_muted;
+        font-size: $font_caption;
+    }
+    QWidget#resultPageSurface QToolButton {
+        min-height: $button_height;
+        padding: 0 $space_3;
+        background: $dark_surface_raised;
+        color: $dark_text;
+        border: 1px solid $dark_border;
+        border-radius: $radius_sm;
+    }
+    QWidget#resultPageSurface QToolButton:hover {
+        background: $dark_surface_selected;
+        border-color: $dark_interactive;
+    }
+    QWidget#resultPageSurface QToolButton:checked {
+        background: $dark_interactive;
+        color: $dark_background;
+        border-color: $dark_interactive;
+    }
+    QWidget#resultPageSurface QWidget#viewerInspector {
+        background: $dark_surface;
+        border-left: 1px solid $dark_border;
+    }
+    QWidget#resultPageSurface QWidget#viewerInspector QToolButton {
+        background: $dark_surface_raised;
+        color: $dark_text;
+        border: 1px solid $dark_border;
+        text-align: left;
+        font-weight: 700;
+    }
+    QWidget#resultPageSurface QWidget#viewerInspector QComboBox,
+    QWidget#resultPageSurface QWidget#viewerInspector QSpinBox,
+    QWidget#resultPageSurface QWidget#viewerInspector QDoubleSpinBox {
+        background: $dark_surface_raised;
+        color: $dark_text;
+        border-color: $dark_border;
+    }
+    QWidget#resultPageSurface QWidget#viewerInspector QLabel,
+    QWidget#resultPageSurface QWidget#viewerInspector QCheckBox {
+        color: $dark_text_muted;
+    }
+    QWidget#resultPageSurface QFrame#viewerViewport {
+        background: $dark_background;
+        border: none;
+    }
 
     QStatusBar {
         background: $light_surface;
