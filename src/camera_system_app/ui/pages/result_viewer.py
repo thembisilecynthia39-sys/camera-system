@@ -29,6 +29,7 @@ class ResultViewerPage(BasePage):
     fit_view_requested = Signal()
     display_mode_requested = Signal(str)
     quality_requested = Signal(str)
+    view_preset_requested = Signal(str)
     display_settings_changed = Signal(object)
     appearance_settings_changed = Signal(object)
     render_settings_changed = Signal(object)
@@ -116,6 +117,7 @@ class ResultViewerPage(BasePage):
         self._toolbar.fit_requested.connect(self.fit_view_requested.emit)
         self._toolbar.display_mode_changed.connect(self.display_mode_requested.emit)
         self._toolbar.quality_changed.connect(self.quality_requested.emit)
+        self._toolbar.view_preset_changed.connect(self.view_preset_requested.emit)
         self._toolbar.play_requested.connect(self.play_requested.emit)
         self._toolbar.pause_requested.connect(self.pause_requested.emit)
         self._toolbar.stop_requested.connect(self.stop_requested.emit)
@@ -131,6 +133,11 @@ class ResultViewerPage(BasePage):
         self._viewport_frame.setObjectName("viewerViewport")
         self._viewport_layout = QVBoxLayout(self._viewport_frame)
         self._viewport_layout.setContentsMargins(0, 0, 0, 0)
+        self._camera_info_label = QLabel()
+        self._camera_info_label.setObjectName("viewerCameraInfo")
+        self._camera_info_label.setWordWrap(True)
+        self._camera_info_label.setVisible(False)
+        self._viewport_layout.addWidget(self._camera_info_label)
         self._inspector = ViewerInspector()
         self._inspector.setVisible(False)
         self._inspector.display_settings_changed.connect(
@@ -214,6 +221,7 @@ class ResultViewerPage(BasePage):
         self._inspector.setVisible(True)
         self._timeline.setVisible(True)
         self._apply_responsive_layout()
+        self._update_viewport_size()
         if self._sphere_available:
             self._banner.set_status(
                 "已加载 {:,} 个 Gaussian：{}".format(gaussian_count, path),
@@ -239,6 +247,17 @@ class ResultViewerPage(BasePage):
 
     def set_current_camera_pose(self, pose) -> None:
         self._timeline.set_current_pose(pose)
+        if pose is not None:
+            self._camera_info_label.setText(
+                "相机 ({:.3f}, {:.3f}, {:.3f})  ·  目标 ({:.3f}, {:.3f}, {:.3f})  ·  FOV {:.1f}°".format(
+                    *pose.position,
+                    *pose.target,
+                    pose.fov_degrees,
+                )
+            )
+
+    def set_camera_info_visible(self, visible: bool) -> None:
+        self._camera_info_label.setVisible(bool(visible))
 
     def set_camera_pose(self, pose) -> None:
         self._inspector.set_camera_pose(pose)
@@ -312,6 +331,14 @@ class ResultViewerPage(BasePage):
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
         self._apply_responsive_layout()
+        self._update_viewport_size()
+
+    def _update_viewport_size(self) -> None:
+        if self._viewer_widget is None:
+            return
+        width = max(1, int(self._viewer_widget.width()))
+        height = max(1, int(self._viewer_widget.height()))
+        self._inspector.set_viewport_size(width, height)
 
     def show_load_error(self, message: str) -> None:
         self._source_card.show()

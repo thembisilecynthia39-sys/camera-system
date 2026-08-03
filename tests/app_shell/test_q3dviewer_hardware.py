@@ -237,6 +237,22 @@ def test_jetson_core_profile_renders_gaussian_ply(qapp, tmp_path):
         sphere_frame = adapter.widget.grabFramebuffer()
         assert not sphere_frame.isNull()
         assert sphere_frame.size() == frame.size()
+    from camera_system_app.domain.viewer import DisplaySettings
+
+    adapter.set_display_settings(
+        DisplaySettings(
+            show_grid=True,
+            show_axis=True,
+            show_bounds=True,
+            show_center=True,
+        )
+    )
+    adapter.widget.update()
+    QTest.qWait(250)
+    qapp.processEvents()
+    overlay_frame = adapter.widget.grabFramebuffer()
+    assert not overlay_frame.isNull()
+    assert overlay_frame.size() == frame.size()
     for width, height in ((1600, 900), (1024, 680)):
         adapter.widget.resize(width, height)
         QTest.qWait(250)

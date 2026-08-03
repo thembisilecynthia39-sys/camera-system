@@ -74,6 +74,7 @@ class ViewerBindings(QObject):
         window.result_page.fit_view_requested.connect(self.fit_view)
         window.result_page.display_mode_requested.connect(self.set_display_mode)
         window.result_page.quality_requested.connect(self.set_quality)
+        window.result_page.view_preset_requested.connect(self.set_view_preset)
         window.result_page.display_settings_changed.connect(
             self.set_display_settings
         )
@@ -193,6 +194,17 @@ class ViewerBindings(QObject):
             self._adapter.fit_scene()
             self._sync_camera_from_adapter()
 
+    def set_view_preset(self, preset: str) -> None:
+        if self._adapter is None:
+            return
+        try:
+            self._adapter.set_view_preset(preset)
+        except (TypeError, ValueError) as exc:
+            self.window.statusBar().showMessage("● 标准视角无效：{}".format(exc))
+            return
+        self._sync_camera_from_adapter()
+        self._mark_project_dirty()
+
     def set_display_mode(self, mode: str) -> None:
         if self._session is None:
             return
@@ -213,6 +225,7 @@ class ViewerBindings(QObject):
         if self._session is None:
             return
         self._session.set_display_settings(settings)
+        self.window.result_page.set_camera_info_visible(settings.show_camera_info)
         if settings.background_color != self._session.project.render.background_color:
             self._session.set_render_settings(
                 replace(
@@ -684,6 +697,7 @@ class ViewerBindings(QObject):
             self.window.result_page.set_fly_speed(project.fly_speed)
             self.window.result_page.set_bookmarks(project.bookmarks)
             self.window.result_page._inspector.set_display_settings(project.display)
+            self.window.result_page.set_camera_info_visible(project.display.show_camera_info)
             self.window.result_page._inspector.set_appearance_settings(project.appearance)
             self.window.result_page._inspector.set_render_settings(project.render)
             self.window.result_page.set_viewer_widget(

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 from PySide6.QtCore import QTimer, QObject, Signal
@@ -104,7 +105,16 @@ class ViewerRenderController(QObject):
             # The final readback is post-processed once on the CPU. Keep the
             # GPU draw neutral during export so exposure/tone mapping/etc. do
             # not get applied a second time before apply_appearance().
-            self.adapter.set_appearance_settings(AppearanceSettings(tone_mapping="none"))
+            self.adapter.set_appearance_settings(
+                replace(
+                    plan.appearance,
+                    exposure=0.0,
+                    tone_mapping="none",
+                    contrast=1.0,
+                    saturation=1.0,
+                    vignette=0.0,
+                )
+            )
             set_quality = getattr(self.adapter, "set_quality", None)
             if set_quality is not None:
                 set_quality(plan.render.quality.value)

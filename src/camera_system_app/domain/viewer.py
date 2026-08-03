@@ -290,6 +290,10 @@ class DisplaySettings:
     sphere_all_instances: bool = False
     background_color: Color3 = (0.025, 0.035, 0.055)
     show_grid: bool = False
+    show_axis: bool = False
+    show_bounds: bool = False
+    show_center: bool = False
+    show_camera_info: bool = False
     show_camera_guides: bool = False
 
     def __post_init__(self) -> None:
@@ -313,6 +317,10 @@ class DisplaySettings:
         object.__setattr__(self, "sphere_all_instances", bool(self.sphere_all_instances))
         object.__setattr__(self, "background_color", _color3(self.background_color, "background_color"))
         object.__setattr__(self, "show_grid", bool(self.show_grid))
+        object.__setattr__(self, "show_axis", bool(self.show_axis))
+        object.__setattr__(self, "show_bounds", bool(self.show_bounds))
+        object.__setattr__(self, "show_center", bool(self.show_center))
+        object.__setattr__(self, "show_camera_info", bool(self.show_camera_info))
         object.__setattr__(self, "show_camera_guides", bool(self.show_camera_guides))
 
     def to_dict(self) -> Dict[str, Any]:
@@ -328,6 +336,10 @@ class DisplaySettings:
             "sphere_all_instances": self.sphere_all_instances,
             "background_color": list(self.background_color),
             "show_grid": self.show_grid,
+            "show_axis": self.show_axis,
+            "show_bounds": self.show_bounds,
+            "show_center": self.show_center,
+            "show_camera_info": self.show_camera_info,
             "show_camera_guides": self.show_camera_guides,
         }
 
@@ -345,6 +357,12 @@ class DisplaySettings:
             sphere_all_instances=value.get("sphere_all_instances", False),
             background_color=value.get("background_color", (0.025, 0.035, 0.055)),
             show_grid=value.get("show_grid", False),
+            show_axis=value.get("show_axis", False),
+            show_bounds=value.get("show_bounds", False),
+            show_center=value.get("show_center", False),
+            show_camera_info=value.get(
+                "show_camera_info", value.get("show_camera_guides", False)
+            ),
             show_camera_guides=value.get("show_camera_guides", False),
         )
 
@@ -355,6 +373,7 @@ class AppearanceSettings:
 
     exposure: float = 0.0
     tone_mapping: str = "aces"
+    sh_degree: int = 3
     contrast: float = 1.0
     saturation: float = 1.0
     vignette: float = 0.0
@@ -366,6 +385,10 @@ class AppearanceSettings:
         saturation = _finite_float(self.saturation, "saturation")
         vignette = _finite_float(self.vignette, "vignette")
         sharpening = _finite_float(self.sharpening, "sharpening")
+        sh_degree_value = _finite_float(self.sh_degree, "SH degree")
+        if not sh_degree_value.is_integer():
+            raise ViewerValidationError("SH degree must be an integer between 0 and 3")
+        sh_degree = int(sh_degree_value)
         if not -20.0 <= exposure <= 20.0:
             raise ViewerValidationError("exposure must be between -20 and 20")
         if contrast < 0.0 or saturation < 0.0:
@@ -379,6 +402,9 @@ class AppearanceSettings:
                 "unsupported tone mapping: {}".format(self.tone_mapping)
             )
         object.__setattr__(self, "tone_mapping", tone_mapping)
+        if not 0 <= sh_degree <= 3:
+            raise ViewerValidationError("SH degree must be between 0 and 3")
+        object.__setattr__(self, "sh_degree", sh_degree)
         object.__setattr__(self, "contrast", contrast)
         object.__setattr__(self, "saturation", saturation)
         object.__setattr__(self, "vignette", vignette)
@@ -388,6 +414,7 @@ class AppearanceSettings:
         return {
             "exposure": self.exposure,
             "tone_mapping": self.tone_mapping,
+            "sh_degree": self.sh_degree,
             "contrast": self.contrast,
             "saturation": self.saturation,
             "vignette": self.vignette,
@@ -399,6 +426,7 @@ class AppearanceSettings:
         return cls(
             exposure=value.get("exposure", 0.0),
             tone_mapping=value.get("tone_mapping", "aces"),
+            sh_degree=value.get("sh_degree", 3),
             contrast=value.get("contrast", 1.0),
             saturation=value.get("saturation", 1.0),
             vignette=value.get("vignette", 0.0),

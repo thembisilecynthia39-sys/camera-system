@@ -128,6 +128,16 @@ class ViewerInspector(QWidget):
         self.sphere_color_mode = QComboBox()
         self.sphere_color_mode.addItem("Gaussian 颜色", "gaussian")
         self.sphere_color_mode.addItem("统一颜色", "uniform")
+        self.show_grid_checkbox = QCheckBox("显示地面网格")
+        self.show_grid_checkbox.setAccessibleName("显示地面网格")
+        self.show_axis_checkbox = QCheckBox("显示坐标轴")
+        self.show_axis_checkbox.setAccessibleName("显示坐标轴")
+        self.show_bounds_checkbox = QCheckBox("显示包围盒")
+        self.show_bounds_checkbox.setAccessibleName("显示场景包围盒")
+        self.show_center_checkbox = QCheckBox("显示场景中心")
+        self.show_center_checkbox.setAccessibleName("显示场景中心")
+        self.show_camera_info_checkbox = QCheckBox("显示相机信息")
+        self.show_camera_info_checkbox.setAccessibleName("显示相机信息")
         self._background_color = DisplaySettings().background_color
         self.background_color_edit = QLineEdit(
             self._color_to_hex(self._background_color)
@@ -141,6 +151,11 @@ class ViewerInspector(QWidget):
         view_form.addRow("线框宽度", self.sphere_line_width)
         view_form.addRow("交互显示", self.sphere_all_instances)
         view_form.addRow("球体颜色", self.sphere_color_mode)
+        view_form.addRow("网格", self.show_grid_checkbox)
+        view_form.addRow("坐标轴", self.show_axis_checkbox)
+        view_form.addRow("包围盒", self.show_bounds_checkbox)
+        view_form.addRow("中心标记", self.show_center_checkbox)
+        view_form.addRow("相机叠加", self.show_camera_info_checkbox)
         view_form.addRow("背景颜色", self.background_color_edit)
 
         camera_content = QWidget()
@@ -199,8 +214,16 @@ class ViewerInspector(QWidget):
         self.tone_mapping_combo.addItem("ACES", "aces")
         self.tone_mapping_combo.addItem("Reinhard", "reinhard")
         self.tone_mapping_combo.addItem("关闭", "none")
+        self.sh_degree_combo = QComboBox()
+        self.sh_degree_combo.addItem("DC（0 阶）", 0)
+        self.sh_degree_combo.addItem("SH 1 阶", 1)
+        self.sh_degree_combo.addItem("SH 2 阶", 2)
+        self.sh_degree_combo.addItem("SH 3 阶", 3)
+        self.sh_degree_combo.setCurrentIndex(self.sh_degree_combo.findData(3))
+        self.sh_degree_combo.setAccessibleName("球谐颜色质量")
         appearance_form.addRow("曝光", self.exposure)
         appearance_form.addRow("色调映射", self.tone_mapping_combo)
+        appearance_form.addRow("球谐质量", self.sh_degree_combo)
         appearance_form.addRow("对比度", self.contrast)
         appearance_form.addRow("饱和度", self.saturation)
         appearance_form.addRow("暗角", self.vignette)
@@ -209,6 +232,16 @@ class ViewerInspector(QWidget):
         render_content = QWidget()
         render_form = QFormLayout(render_content)
         render_form.setContentsMargins(4, 4, 4, 4)
+        self.resolution_preset_combo = QComboBox()
+        self._viewport_size = (1920, 1080)
+        self.resolution_preset_combo.addItem("当前视口 · 1920×1080", "viewport")
+        self.resolution_preset_combo.addItem("720p · 1280×720", "720p")
+        self.resolution_preset_combo.addItem("1080p · 1920×1080", "1080p")
+        self.resolution_preset_combo.addItem("自定义", "custom")
+        self.resolution_preset_combo.setCurrentIndex(
+            self.resolution_preset_combo.findData("1080p")
+        )
+        self.resolution_preset_combo.setAccessibleName("导出分辨率预设")
         self.render_width = SafeSpinBox()
         self.render_width.setRange(1, 8192)
         self.render_width.setValue(1920)
@@ -216,13 +249,23 @@ class ViewerInspector(QWidget):
         self.render_height.setRange(1, 8192)
         self.render_height.setValue(1080)
         self.render_fps = self._double(1.0, 240.0, 30.0, 1.0)
+        self.fps_preset_combo = QComboBox()
+        self.fps_preset_combo.addItem("24 FPS", 24.0)
+        self.fps_preset_combo.addItem("25 FPS", 25.0)
+        self.fps_preset_combo.addItem("30 FPS", 30.0)
+        self.fps_preset_combo.addItem("60 FPS", 60.0)
+        self.fps_preset_combo.addItem("自定义", None)
+        self.fps_preset_combo.setCurrentIndex(self.fps_preset_combo.findData(30.0))
+        self.fps_preset_combo.setAccessibleName("导出帧率预设")
         self.output_kind = QComboBox()
         self.output_kind.addItem("MP4 视频", OutputKind.MP4.value)
         self.output_kind.addItem("PNG 单帧", OutputKind.PNG.value)
         self.output_kind.addItem("PNG 序列", OutputKind.PNG_SEQUENCE.value)
         self.transparent_background = QCheckBox("透明背景（仅 PNG）")
+        render_form.addRow("分辨率预设", self.resolution_preset_combo)
         render_form.addRow("宽度", self.render_width)
         render_form.addRow("高度", self.render_height)
+        render_form.addRow("帧率预设", self.fps_preset_combo)
         render_form.addRow("帧率", self.render_fps)
         render_form.addRow("输出格式", self.output_kind)
         render_form.addRow("", self.transparent_background)
@@ -244,8 +287,19 @@ class ViewerInspector(QWidget):
             self.sphere_opacity,
             self.sphere_line_width,
             self.sphere_color_mode,
+            self.show_grid_checkbox,
+            self.show_axis_checkbox,
+            self.show_bounds_checkbox,
+            self.show_center_checkbox,
+            self.show_camera_info_checkbox,
         ):
-            signal = control.currentIndexChanged if isinstance(control, QComboBox) else control.valueChanged
+            signal = (
+                control.currentIndexChanged
+                if isinstance(control, QComboBox)
+                else control.toggled
+                if isinstance(control, QCheckBox)
+                else control.valueChanged
+            )
             signal.connect(self._emit_display_settings)
         self.sphere_all_instances.toggled.connect(self._emit_display_settings)
         self.background_color_edit.editingFinished.connect(
@@ -254,6 +308,9 @@ class ViewerInspector(QWidget):
         for control in (self.exposure, self.contrast, self.saturation, self.vignette, self.sharpening):
             control.valueChanged.connect(self._emit_appearance_settings)
         self.tone_mapping_combo.currentIndexChanged.connect(
+            self._emit_appearance_settings
+        )
+        self.sh_degree_combo.currentIndexChanged.connect(
             self._emit_appearance_settings
         )
         self.fov.valueChanged.connect(self._fov_value_changed)
@@ -284,7 +341,13 @@ class ViewerInspector(QWidget):
         self.bookmark_name_edit.textChanged.connect(self._update_bookmark_actions)
         self.bookmark_combo.currentIndexChanged.connect(self._update_bookmark_actions)
         self._update_bookmark_actions()
-        for control in (self.render_width, self.render_height, self.render_fps, self.output_kind, self.transparent_background):
+        for control in (
+            self.render_width,
+            self.render_height,
+            self.render_fps,
+            self.output_kind,
+            self.transparent_background,
+        ):
             signal = (
                 control.valueChanged
                 if isinstance(control, (SafeSpinBox, SafeDoubleSpinBox))
@@ -293,6 +356,10 @@ class ViewerInspector(QWidget):
                 else control.toggled
             )
             signal.connect(self._emit_render_settings)
+        self.resolution_preset_combo.currentIndexChanged.connect(
+            self._resolution_preset_changed
+        )
+        self.fps_preset_combo.currentIndexChanged.connect(self._fps_preset_changed)
         self.output_kind.currentIndexChanged.connect(self._update_transparency_state)
         self._update_transparency_state()
 
@@ -355,6 +422,65 @@ class ViewerInspector(QWidget):
     def _emit_render_settings(self, *_args):
         self.render_settings_changed.emit(self.render_settings())
 
+    def _resolution_preset_changed(self, index):
+        values = {
+            "viewport": self._viewport_size,
+            "720p": (1280, 720),
+            "1080p": (1920, 1080),
+        }
+        size = values.get(self.resolution_preset_combo.itemData(index))
+        if size is None:
+            return
+        blockers = [QSignalBlocker(self.render_width), QSignalBlocker(self.render_height)]
+        self.render_width.setValue(size[0])
+        self.render_height.setValue(size[1])
+        del blockers
+        self._emit_render_settings()
+
+    def set_viewport_size(self, width, height):
+        width = max(1, int(width))
+        height = max(1, int(height))
+        self._viewport_size = (width, height)
+        self.resolution_preset_combo.setItemText(
+            0, "当前视口 · {}×{}".format(width, height)
+        )
+
+    def _fps_preset_changed(self, index):
+        value = self.fps_preset_combo.itemData(index)
+        if value is None:
+            return
+        blocker = QSignalBlocker(self.render_fps)
+        self.render_fps.setValue(float(value))
+        del blocker
+        self._emit_render_settings()
+
+    def _sync_render_presets(self):
+        size = (self.render_width.value(), self.render_height.value())
+        known_sizes = {
+            (1280, 720): "720p",
+            (1920, 1080): "1080p",
+        }
+        size_key = (
+            "viewport"
+            if size == self._viewport_size
+            else known_sizes.get(size, "custom")
+        )
+        fps_value = float(self.render_fps.value())
+        fps_key = fps_value if fps_value in (24.0, 25.0, 30.0, 60.0) else None
+        blockers = [
+            QSignalBlocker(self.resolution_preset_combo),
+            QSignalBlocker(self.fps_preset_combo),
+        ]
+        self.resolution_preset_combo.setCurrentIndex(
+            self.resolution_preset_combo.findData(size_key)
+        )
+        self.fps_preset_combo.setCurrentIndex(
+            self.fps_preset_combo.findData(fps_key)
+            if fps_key is not None
+            else self.fps_preset_combo.findData(None)
+        )
+        del blockers
+
     def _fov_value_changed(self, value):
         self._camera_pose = replace(self._camera_pose, fov_degrees=float(value))
         self.fov_changed.emit(float(value))
@@ -404,12 +530,18 @@ class ViewerInspector(QWidget):
             sphere_color_mode=self.sphere_color_mode.currentData(),
             sphere_all_instances=self.sphere_all_instances.isChecked(),
             background_color=self._background_color,
+            show_grid=self.show_grid_checkbox.isChecked(),
+            show_axis=self.show_axis_checkbox.isChecked(),
+            show_bounds=self.show_bounds_checkbox.isChecked(),
+            show_center=self.show_center_checkbox.isChecked(),
+            show_camera_info=self.show_camera_info_checkbox.isChecked(),
         )
 
     def appearance_settings(self):
         return AppearanceSettings(
             exposure=self.exposure.value(),
             tone_mapping=self.tone_mapping_combo.currentData(),
+            sh_degree=self.sh_degree_combo.currentData(),
             contrast=self.contrast.value(),
             saturation=self.saturation.value(),
             vignette=self.vignette.value(),
@@ -441,6 +573,11 @@ class ViewerInspector(QWidget):
             self.sphere_all_instances,
             self.sphere_color_mode,
             self.background_color_edit,
+            self.show_grid_checkbox,
+            self.show_axis_checkbox,
+            self.show_bounds_checkbox,
+            self.show_center_checkbox,
+            self.show_camera_info_checkbox,
         )
         blockers = [QSignalBlocker(control) for control in controls]
         self.display_mode_combo.setCurrentIndex(self.display_mode_combo.findData(settings.mode.value))
@@ -452,6 +589,11 @@ class ViewerInspector(QWidget):
         self.sphere_color_mode.setCurrentIndex(self.sphere_color_mode.findData(settings.sphere_color_mode))
         self._background_color = settings.background_color
         self.background_color_edit.setText(self._color_to_hex(settings.background_color))
+        self.show_grid_checkbox.setChecked(settings.show_grid)
+        self.show_axis_checkbox.setChecked(settings.show_axis)
+        self.show_bounds_checkbox.setChecked(settings.show_bounds)
+        self.show_center_checkbox.setChecked(settings.show_center)
+        self.show_camera_info_checkbox.setChecked(settings.show_camera_info)
         del blockers
 
     def set_appearance_settings(self, settings):
@@ -460,6 +602,7 @@ class ViewerInspector(QWidget):
         controls = (
             self.exposure,
             self.tone_mapping_combo,
+            self.sh_degree_combo,
             self.contrast,
             self.saturation,
             self.vignette,
@@ -470,6 +613,9 @@ class ViewerInspector(QWidget):
         self.tone_mapping_combo.setCurrentIndex(
             self.tone_mapping_combo.findData(settings.tone_mapping)
         )
+        self.sh_degree_combo.setCurrentIndex(
+            self.sh_degree_combo.findData(settings.sh_degree)
+        )
         self.contrast.setValue(settings.contrast)
         self.saturation.setValue(settings.saturation)
         self.vignette.setValue(settings.vignette)
@@ -479,7 +625,15 @@ class ViewerInspector(QWidget):
     def set_render_settings(self, settings):
         if not isinstance(settings, RenderSettings):
             raise ValueError("render settings must be a RenderSettings value")
-        controls = (self.render_width, self.render_height, self.render_fps, self.output_kind, self.transparent_background)
+        controls = (
+            self.resolution_preset_combo,
+            self.render_width,
+            self.render_height,
+            self.fps_preset_combo,
+            self.render_fps,
+            self.output_kind,
+            self.transparent_background,
+        )
         blockers = [QSignalBlocker(control) for control in controls]
         self.render_width.setValue(settings.width)
         self.render_height.setValue(settings.height)
@@ -487,6 +641,7 @@ class ViewerInspector(QWidget):
         self.output_kind.setCurrentIndex(self.output_kind.findData(settings.output_kind.value))
         self.transparent_background.setChecked(settings.transparent_background)
         del blockers
+        self._sync_render_presets()
         self._update_transparency_state()
 
     def set_camera_pose(self, pose):

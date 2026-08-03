@@ -127,6 +127,51 @@ def test_render_controller_exposes_confirmed_sphere_defaults_and_settings():
     assert settings["all_instances"] is True
 
 
+def test_gaussian_item_can_limit_final_spherical_harmonic_evaluation():
+    prepare_q3dviewer(PROJECT_ROOT)
+    from q3dviewer.custom_items.gaussian_item import GaussianItem
+
+    item = GaussianItem(sort_enabled=False, sort_backend="opengl")
+
+    assert item.set_sh_degree(1) == 1
+    assert item.sh_degree == 1
+    with pytest.raises(ValueError, match="SH degree"):
+        item.set_sh_degree(4)
+
+
+def test_scene_overlay_item_keeps_bounds_and_toggle_state_without_gl_context():
+    prepare_q3dviewer(PROJECT_ROOT)
+    from q3dviewer.custom_items.scene_overlay_item import SceneOverlayItem
+
+    overlay = SceneOverlayItem()
+    overlay.set_bounds((-2.0, -1.0, 0.0), (4.0, 3.0, 6.0))
+    state = overlay.set_options(
+        grid=True,
+        axis=True,
+        bounds=True,
+        center=True,
+    )
+
+    assert state == {
+        "grid": True,
+        "axis": True,
+        "bounds": True,
+        "center": True,
+    }
+    assert overlay.bounds[0] == pytest.approx((-2.0, -1.0, 0.0))
+    assert overlay.bounds[1] == pytest.approx((4.0, 3.0, 6.0))
+
+
+def test_scene_overlay_expands_degenerate_single_gaussian_bounds():
+    prepare_q3dviewer(PROJECT_ROOT)
+    from q3dviewer.custom_items.scene_overlay_item import SceneOverlayItem
+
+    overlay = SceneOverlayItem()
+    overlay.set_bounds((0.0, 0.0, 0.0), (0.0, 0.0, 0.0))
+
+    assert all(upper > lower for lower, upper in zip(*overlay.bounds))
+
+
 def test_sphere_shader_failure_keeps_standard_renderer_available(monkeypatch, tmp_path):
     prepare_q3dviewer(PROJECT_ROOT)
     from q3dviewer.custom_items.gaussian_item import GaussianItem

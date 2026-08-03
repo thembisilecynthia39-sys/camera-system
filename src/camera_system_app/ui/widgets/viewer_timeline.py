@@ -98,12 +98,16 @@ class ViewerTimelineWidget(QWidget):
         self.delete_button = self._action("删除", "删除当前相机镜头段")
         self.move_left_button = self._action("←", "向前移动当前镜头段")
         self.move_right_button = self._action("→", "向后移动当前镜头段")
+        self.update_start_button = self._action("更新起点", "用当前视角更新镜头起点")
+        self.update_end_button = self._action("更新终点", "用当前视角更新镜头终点")
         for button in (
             self.add_button,
             self.duplicate_button,
             self.delete_button,
             self.move_left_button,
             self.move_right_button,
+            self.update_start_button,
+            self.update_end_button,
         ):
             controls.addWidget(button)
         self.shot_editor_toggle = QToolButton()
@@ -139,6 +143,8 @@ class ViewerTimelineWidget(QWidget):
         self.delete_button.clicked.connect(self._delete_shot)
         self.move_left_button.clicked.connect(lambda: self._move_shot(-1))
         self.move_right_button.clicked.connect(lambda: self._move_shot(1))
+        self.update_start_button.clicked.connect(lambda: self._update_selected_pose("start"))
+        self.update_end_button.clicked.connect(lambda: self._update_selected_pose("end"))
         self.previous_frame_button.clicked.connect(self._previous_frame)
         self.next_frame_button.clicked.connect(self._next_frame)
         self.previous_shot_button.clicked.connect(lambda: self._move_selected_shot(-1))
@@ -425,6 +431,23 @@ class ViewerTimelineWidget(QWidget):
             )
         )
 
+    def _update_selected_pose(self, endpoint):
+        if not self._timeline.shots or self._selected_shot < 0:
+            return
+        if endpoint not in ("start", "end"):
+            raise ValueError("unsupported shot endpoint: {}".format(endpoint))
+        original = self._timeline.shots[self._selected_shot]
+        shot = replace(original, **{endpoint: self._current_pose})
+        shots = list(self._timeline.shots)
+        shots[self._selected_shot] = shot
+        self._replace_timeline(
+            CameraTimeline(
+                shots=tuple(shots),
+                fps=self._timeline.fps,
+                loop=self._timeline.loop,
+            )
+        )
+
     def _replace_timeline(self, timeline):
         self._timeline = timeline
         self.set_timeline(timeline)
@@ -447,6 +470,8 @@ class ViewerTimelineWidget(QWidget):
             and self._selected_shot >= 0
             and self._selected_shot < len(self._timeline.shots) - 1
         )
+        self.update_start_button.setEnabled(has_shots and self._selected_shot >= 0)
+        self.update_end_button.setEnabled(has_shots and self._selected_shot >= 0)
         self.previous_frame_button.setEnabled(self.frame_slider.value() > 0)
         self.next_frame_button.setEnabled(
             self.frame_slider.value() < self.frame_slider.maximum()

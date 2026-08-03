@@ -52,6 +52,7 @@ class GaussianItem(BaseItem):
         self.sort_skipped_large_model = False
         self.sort_backend = 'opengl'
         self.cuda_pw = None
+        self.sh_degree = 3
         try:
             if sort_backend not in ('auto', 'opengl', 'torch'):
                 raise ValueError(f"Unknown sort backend: {sort_backend}")
@@ -443,11 +444,10 @@ class GaussianItem(BaseItem):
                 self.interactive_max_gaussians,
             )
         glUseProgram(self.prep_program)
-        render_sh_dim = (
-            min(self.sh_dim, 3)
-            if self.interactive_preview
-            else self.sh_dim
-        )
+        requested_sh_dim = (self.sh_degree + 1) ** 2 * 3
+        render_sh_dim = min(self.sh_dim, requested_sh_dim)
+        if self.interactive_preview:
+            render_sh_dim = min(render_sh_dim, 3)
         # The storage stride always uses the complete row width. Preview mode
         # may reduce SH evaluation work, but it must never reinterpret the
         # packed Gaussian buffer with a shorter row stride.
@@ -484,6 +484,19 @@ class GaussianItem(BaseItem):
 
     def set_quality(self, quality):
         return self.render_controller.set_quality(quality)
+
+    def set_sh_degree(self, degree):
+        try:
+            value = int(degree)
+            numeric = float(degree)
+        except (TypeError, ValueError):
+            raise ValueError("SH degree must be an integer between 0 and 3")
+        if value != numeric or not 0 <= value <= 3:
+            raise ValueError("SH degree must be between 0 and 3")
+        self.sh_degree = value
+        if self.glwidget() is not None:
+            self.glwidget().update()
+        return value
 
     def set_sphere_settings(self, **changes):
         return self.render_controller.set_sphere_settings(**changes)

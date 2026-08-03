@@ -95,6 +95,7 @@ class Q3DViewerAdapter(QObject):
         super().__init__(parent)
         prepare_q3dviewer(project_root)
         from q3dviewer.custom_items.gaussian_item import GaussianItem
+        from q3dviewer.custom_items.scene_overlay_item import SceneOverlayItem
         from q3dviewer.glwidget import GLWidget
 
         self.widget = GLWidget()
@@ -114,6 +115,9 @@ class Q3DViewerAdapter(QObject):
             self._on_sphere_availability_changed
         )
         self.widget.add_item_with_name("gaussian", self.item)
+        self.overlay_item = SceneOverlayItem()
+        self.overlay_item.disable_setting()
+        self.widget.add_item_with_name("scene_overlays", self.overlay_item)
         self._default_center = np.zeros(3, dtype=np.float64)
         self._default_distance = 4.0
         self._default_euler = np.array([pi / 3, 0.0, pi / 4], dtype=np.float64)
@@ -143,6 +147,7 @@ class Q3DViewerAdapter(QObject):
         self._default_center = (lo + hi) * 0.5
         radius = float(np.linalg.norm(hi - lo) * 0.5)
         self._default_distance = max(radius * 2.5, 1.0)
+        self.overlay_item.set_bounds(lo, hi)
         self.reset_view()
         return int(gaussians.shape[0])
 
@@ -183,6 +188,26 @@ class Q3DViewerAdapter(QObject):
     def fit_scene(self) -> None:
         self.reset_view()
 
+    def set_view_preset(self, preset: str) -> None:
+        presets = {
+            "front": np.array([0.0, 0.0, 0.0], dtype=np.float64),
+            "back": np.array([0.0, 0.0, pi], dtype=np.float64),
+            "left": np.array([0.0, -pi / 2.0, 0.0], dtype=np.float64),
+            "right": np.array([0.0, pi / 2.0, 0.0], dtype=np.float64),
+            "top": np.array([-pi / 2.0, 0.0, 0.0], dtype=np.float64),
+            "bottom": np.array([pi / 2.0, 0.0, 0.0], dtype=np.float64),
+        }
+        key = str(preset).lower().strip()
+        if key not in presets:
+            raise ValueError("unsupported view preset: {}".format(preset))
+        self.widget.set_cam_position(
+            center=self._default_center.copy(),
+            distance=self._default_distance,
+            euler=presets[key],
+        )
+        self.item.request_sort()
+        self.widget.update()
+
     def set_display_settings(self, settings: DisplaySettings) -> None:
         if not isinstance(settings, DisplaySettings):
             raise ValueError("display settings must be a DisplaySettings value")
@@ -195,6 +220,12 @@ class Q3DViewerAdapter(QObject):
             color_mode=settings.sphere_color_mode,
             color=settings.sphere_color,
             all_instances=settings.sphere_all_instances,
+        )
+        self.overlay_item.set_options(
+            grid=settings.show_grid,
+            axis=settings.show_axis,
+            bounds=settings.show_bounds,
+            center=settings.show_center,
         )
         self.widget.set_color(
             np.asarray(
@@ -222,6 +253,9 @@ class Q3DViewerAdapter(QObject):
         if not isinstance(settings, AppearanceSettings):
             raise ValueError("appearance settings must be an AppearanceSettings value")
         self._appearance_settings = settings
+        set_sh_degree = getattr(self.item, "set_sh_degree", None)
+        if callable(set_sh_degree):
+            set_sh_degree(settings.sh_degree)
         set_appearance = getattr(self.item, "set_appearance_settings", None)
         if callable(set_appearance):
             set_appearance(settings)

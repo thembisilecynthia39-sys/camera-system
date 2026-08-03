@@ -25,6 +25,7 @@ class ViewerToolbar(QWidget):
     fit_requested = Signal()
     display_mode_changed = Signal(str)
     quality_changed = Signal(str)
+    view_preset_changed = Signal(str)
     play_requested = Signal()
     pause_requested = Signal()
     stop_requested = Signal()
@@ -78,6 +79,20 @@ class ViewerToolbar(QWidget):
         self.quality_combo.setCurrentIndex(1)
         primary_row.addWidget(self.quality_combo)
 
+        self._view_label = QLabel("视角")
+        self._view_label.setObjectName("viewerToolbarLabel")
+        primary_row.addWidget(self._view_label)
+        self.view_preset_combo = QComboBox()
+        self.view_preset_combo.setAccessibleName("标准相机视角")
+        self.view_preset_combo.addItem("当前", "current")
+        self.view_preset_combo.addItem("前", "front")
+        self.view_preset_combo.addItem("后", "back")
+        self.view_preset_combo.addItem("左", "left")
+        self.view_preset_combo.addItem("右", "right")
+        self.view_preset_combo.addItem("上", "top")
+        self.view_preset_combo.addItem("下", "bottom")
+        primary_row.addWidget(self.view_preset_combo)
+
         self.play_button = self._button("播放", "播放相机漫游")
         self.play_button.setCheckable(True)
         self.stop_button = self._button("停止", "停止相机漫游")
@@ -103,6 +118,7 @@ class ViewerToolbar(QWidget):
         self._fit.clicked.connect(self.fit_requested.emit)
         self.display_mode_combo.currentIndexChanged.connect(self._emit_mode)
         self.quality_combo.currentIndexChanged.connect(self._emit_quality)
+        self.view_preset_combo.currentIndexChanged.connect(self._emit_view_preset)
         self.play_button.toggled.connect(self._emit_playback)
         self.stop_button.clicked.connect(self._stop_playback)
         self.inspector_button.clicked.connect(self.inspector_requested.emit)
@@ -129,6 +145,15 @@ class ViewerToolbar(QWidget):
         if value is not None:
             self.quality_changed.emit(str(value))
 
+    def _emit_view_preset(self, index):
+        value = self.view_preset_combo.itemData(index)
+        if value in (None, "current"):
+            return
+        self.view_preset_changed.emit(str(value))
+        blocker = QSignalBlocker(self.view_preset_combo)
+        self.view_preset_combo.setCurrentIndex(0)
+        del blocker
+
     def _emit_playback(self, playing):
         if playing:
             self.play_button.setText("暂停")
@@ -149,6 +174,12 @@ class ViewerToolbar(QWidget):
 
     def set_project_dirty(self, dirty):
         self.save_button.setText("保存*" if dirty else "保存")
+
+    def resizeEvent(self, event):
+        narrow = event.size().width() < 900
+        self._view_label.setVisible(not narrow)
+        self.view_preset_combo.setVisible(not narrow)
+        super().resizeEvent(event)
 
     def set_sphere_modes_available(self, available, error=""):
         available = bool(available)

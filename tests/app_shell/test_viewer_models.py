@@ -39,6 +39,18 @@ def test_display_settings_can_request_all_spheres_during_interaction():
     assert DisplaySettings.from_dict(settings.to_dict()) == settings
 
 
+def test_display_settings_round_trip_preserves_scene_inspection_overlays():
+    settings = DisplaySettings(
+        show_grid=True,
+        show_axis=True,
+        show_bounds=True,
+        show_center=True,
+        show_camera_info=True,
+    )
+
+    assert DisplaySettings.from_dict(settings.to_dict()) == settings
+
+
 def test_camera_timeline_rejects_duplicate_shot_ids():
     pose = CameraPose()
     shot = CameraShot("duplicate", "镜头", pose, pose)
@@ -50,6 +62,17 @@ def test_camera_timeline_rejects_duplicate_shot_ids():
 def test_appearance_rejects_unknown_tone_mapping():
     with pytest.raises(ViewerValidationError, match="tone mapping"):
         AppearanceSettings(tone_mapping="filmic-unknown")
+
+
+def test_appearance_round_trip_preserves_spherical_harmonic_degree():
+    settings = AppearanceSettings(sh_degree=2)
+
+    assert AppearanceSettings.from_dict(settings.to_dict()) == settings
+
+
+def test_appearance_rejects_spherical_harmonic_degree_outside_supported_range():
+    with pytest.raises(ViewerValidationError, match="SH degree"):
+        AppearanceSettings(sh_degree=4)
 
 
 def test_enum_values_are_stable_for_project_serialization():

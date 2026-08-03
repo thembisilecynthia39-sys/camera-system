@@ -8,6 +8,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QLabel, QToolButton, QWidget
 
 from camera_system_app.domain.viewer import (
+    AppearanceSettings,
     CameraBookmark,
     CameraMode,
     CameraPose,
@@ -31,6 +32,7 @@ def test_viewer_toolbar_exposes_core_roaming_and_presentation_actions(qapp):
     assert toolbar.display_mode_combo.findData(DisplayMode.SPHERE_WIREFRAME.value) >= 0
     assert toolbar.display_mode_combo.findData(DisplayMode.OVERLAY.value) >= 0
     assert toolbar.quality_combo.count() >= 3
+    assert toolbar.view_preset_combo.findData("front") >= 0
 
 
 def test_viewer_toolbar_emits_mode_and_playback_signals(qapp):
@@ -59,6 +61,18 @@ def test_viewer_toolbar_syncing_playback_state_does_not_emit_commands(qapp):
     toolbar.set_playing(False)
 
     assert commands == []
+
+
+def test_viewer_toolbar_emits_standard_view_preset(qapp):
+    toolbar = ViewerToolbar()
+    presets = []
+    toolbar.view_preset_changed.connect(presets.append)
+
+    toolbar.view_preset_combo.setCurrentIndex(
+        toolbar.view_preset_combo.findData("top")
+    )
+
+    assert presets == ["top"]
 
 
 def test_sphere_controls_disable_when_renderer_reports_shader_unavailable(qapp):
@@ -129,6 +143,39 @@ def test_viewer_inspector_exposes_tone_mapping_choices(qapp):
     assert emitted[-1].tone_mapping == "reinhard"
 
 
+def test_viewer_inspector_exposes_sh_degree_choices(qapp):
+    inspector = ViewerInspector()
+    emitted = []
+    inspector.appearance_settings_changed.connect(emitted.append)
+
+    inspector.sh_degree_combo.setCurrentIndex(
+        inspector.sh_degree_combo.findData(1)
+    )
+
+    assert emitted
+    assert isinstance(emitted[-1], AppearanceSettings)
+    assert emitted[-1].sh_degree == 1
+
+
+def test_viewer_inspector_emits_scene_overlay_toggles(qapp):
+    inspector = ViewerInspector()
+    emitted = []
+    inspector.display_settings_changed.connect(emitted.append)
+
+    inspector.show_grid_checkbox.setChecked(True)
+    inspector.show_axis_checkbox.setChecked(True)
+    inspector.show_bounds_checkbox.setChecked(True)
+    inspector.show_center_checkbox.setChecked(True)
+    inspector.show_camera_info_checkbox.setChecked(True)
+
+    assert emitted
+    assert emitted[-1].show_grid is True
+    assert emitted[-1].show_axis is True
+    assert emitted[-1].show_bounds is True
+    assert emitted[-1].show_center is True
+    assert emitted[-1].show_camera_info is True
+
+
 def test_viewer_inspector_emits_editable_background_color(qapp):
     inspector = ViewerInspector()
     emitted = []
@@ -152,6 +199,30 @@ def test_viewer_inspector_disables_transparency_for_mp4_output(qapp):
         inspector.output_kind.findData("png")
     )
     assert inspector.transparent_background.isEnabled() is True
+
+
+def test_viewer_inspector_resolution_presets_update_output_dimensions(qapp):
+    inspector = ViewerInspector()
+
+    inspector.resolution_preset_combo.setCurrentIndex(
+        inspector.resolution_preset_combo.findData("1080p")
+    )
+
+    assert inspector.render_width.value() == 1920
+    assert inspector.render_height.value() == 1080
+
+
+def test_viewer_inspector_current_viewport_resolution_is_a_real_preset(qapp):
+    inspector = ViewerInspector()
+    inspector.set_viewport_size(800, 600)
+
+    inspector.resolution_preset_combo.setCurrentIndex(
+        inspector.resolution_preset_combo.findData("viewport")
+    )
+
+    assert inspector.render_width.value() == 800
+    assert inspector.render_height.value() == 600
+
 
 
 def test_viewer_inspector_exposes_fly_navigation_and_camera_bookmarks(qapp):
@@ -205,6 +276,18 @@ def test_viewer_inspector_exposes_editable_camera_position_and_target(qapp):
     assert emitted[-1].position == (4.0, 2.0, 3.0)
     assert emitted[-1].target == (0.5, 0.25, -1.0)
     assert emitted[-1].fov_degrees == 57.0
+
+
+def test_viewer_timeline_can_update_selected_shot_end_from_current_pose(qapp):
+    timeline = ViewerTimelineWidget()
+    first = CameraPose(position=(0.0, 0.0, 5.0))
+    second = CameraPose(position=(2.0, 1.0, 4.0))
+    timeline.set_current_pose(first)
+    timeline.add_button.click()
+    timeline.set_current_pose(second)
+    timeline.update_end_button.click()
+
+    assert timeline.timeline.shots[0].end == second
 
 
 def test_result_page_contains_studio_shell_and_fits_minimum_window(qapp, tmp_path):

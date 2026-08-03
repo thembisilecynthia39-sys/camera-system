@@ -60,6 +60,15 @@ def test_adapter_applies_roaming_mode_and_fly_speed_to_embedded_widget(qapp):
     adapter.release()
 
 
+def test_adapter_exposes_standard_axis_view_presets(qapp):
+    adapter = Q3DViewerAdapter(PROJECT_ROOT)
+
+    adapter.set_view_preset("top")
+
+    assert adapter.widget.euler == pytest.approx((-np.pi / 2.0, 0.0, 0.0))
+    adapter.release()
+
+
 def test_adapter_publishes_sphere_shader_availability(qapp):
     adapter = Q3DViewerAdapter(PROJECT_ROOT)
     events = []
