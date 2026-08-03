@@ -6,6 +6,14 @@
 
 **Architecture:** Keep the existing PySide6/Qt Widgets application and q3dviewer OpenGL renderer. Add pure viewer domain models for state and serialization, a deterministic camera timeline service, a shared Gaussian GPU-data owner, separate splat and sphere render passes, a session/adapter boundary for UI integration, and a GUI-thread render scheduler feeding a CPU encoder worker. The first delivery prioritizes high-quality interactive roaming and video presentation; editing/cleanup workflows remain outside this feature.
 
+**Delivery status (2026-08-03):** Core Viewer Studio delivery is implemented and
+verified. This includes Orbit/Fly roaming, FOV/fly speed, named camera bookmarks,
+frame-based Camera Director editing/playback, standard/sphere/overlay rendering,
+interactive and final appearance controls, sidecar save/restore, bounded PNG/MP4
+output, cancellation, narrow-window panel switching, and the opt-in Jetson GL
+smoke test. The unchecked task lists below are retained as the original execution
+record; release evidence is summarized in the user guide and README.
+
 **Tech Stack:** Existing Python project conventions, Python 3.8-compatible syntax, PySide6 compatibility APIs, Qt Widgets, Fusion/QSS, NumPy, OpenGL 4.3 core profile, pytest, PyAV 12.3.0, and the existing Jetson GStreamer/H.264 path.
 
 ## Global Constraints
