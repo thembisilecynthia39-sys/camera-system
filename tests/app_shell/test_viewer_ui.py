@@ -405,9 +405,12 @@ def test_narrow_viewer_toggles_overlay_without_squeezing_gl(
 
 def test_sphere_fallback_banner_survives_viewer_widget_activation(qapp, tmp_path):
     page = ResultViewerPage(str(tmp_path / "results"), str(tmp_path / "viewer"))
+    page.show()
     page.set_sphere_modes_available(False, "shader unavailable")
     page.set_viewer_widget(QLabel(), "scene.ply", 1)
+    qapp.processEvents()
 
+    assert page._banner.isVisible() is True
     assert "外接球显示不可用" in page._banner._text.text()
     page.hide()
 

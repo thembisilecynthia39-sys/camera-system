@@ -124,6 +124,23 @@ def test_viewer_controls_have_dark_scope_object_names(qapp):
     assert inspector.background_color_edit.objectName() == "viewerInspectorInput"
 
 
+def test_result_viewer_controls_are_polished_with_dark_palette(qapp, tmp_path):
+    previous_stylesheet = qapp.styleSheet()
+    qapp.setStyleSheet(application_stylesheet())
+    page = ResultViewerPage(str(tmp_path / "results"), str(tmp_path / "viewer"))
+    try:
+        page.show()
+        qapp.processEvents()
+
+        expected = style_tokens()["dark_viewer_raised"].lower()
+        assert page._inspector.background_color_edit.palette().color(QPalette.Base).name() == expected
+        assert page._inspector.display_mode_combo.palette().color(QPalette.Base).name() == expected
+        assert page._toolbar.quality_combo.palette().color(QPalette.Base).name() == expected
+    finally:
+        page.hide()
+        qapp.setStyleSheet(previous_stylesheet)
+
+
 def test_status_banner_exposes_semantic_symbol_and_accessible_text(qapp):
     banner = StatusBanner("网络不可用", "danger")
 
