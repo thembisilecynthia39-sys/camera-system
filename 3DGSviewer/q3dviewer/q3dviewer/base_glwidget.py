@@ -15,6 +15,7 @@ class BaseGLWidget(QOpenGLWidget):
     initialization_failed = QtCore.Signal(str)
     interaction_started = QtCore.Signal()
     interaction_finished = QtCore.Signal()
+    frame_rendered = QtCore.Signal(object)
 
     def __init__(self, parent=None):
         QOpenGLWidget.__init__(self, parent)
@@ -31,6 +32,7 @@ class BaseGLWidget(QOpenGLWidget):
         self.show_center = False
         self.enable_show_center = True
         self.need_recalc_view = True
+        self._render_size_override = None
         self.view_matrix = self.get_view_matrix()
         self.projection_matrix = self.get_projection_matrix()
         self._projection_dirty = True
@@ -83,12 +85,16 @@ class BaseGLWidget(QOpenGLWidget):
         """
         Return the current width of the widget.
         """
+        if self._render_size_override is not None:
+            return int(self._render_size_override[0])
         return int(self.width() * self.devicePixelRatioF())
 
     def current_height(self):
         """
         Return the current height of the widget.
         """
+        if self._render_size_override is not None:
+            return int(self._render_size_override[1])
         return int(self.height() * self.devicePixelRatioF())
 
     def reset(self):
@@ -147,6 +153,47 @@ class BaseGLWidget(QOpenGLWidget):
     def set_view_matrix(self, view_matrix):
         self.view_matrix = view_matrix
         self.need_recalc_view = False
+
+    def get_camera_state(self):
+        """Return a serializable camera snapshot in the native orbit model."""
+
+        return {
+            "center": [float(value) for value in self.center],
+            "euler": [float(value) for value in self.euler],
+            "distance": float(self.dist),
+            "fov_degrees": float(self._fov),
+        }
+
+    def set_camera_state(self, state):
+        """Restore a camera snapshot without applying incremental transforms."""
+
+        if not isinstance(state, dict):
+            raise ValueError("camera state must be a dictionary")
+        required = ("center", "euler", "distance")
+        if any(key not in state for key in required):
+            raise ValueError("camera state requires center, euler, and distance")
+        try:
+            center = np.asarray(state["center"], dtype=np.float64)
+            euler = np.asarray(state["euler"], dtype=np.float64)
+            distance = float(state["distance"])
+            fov = float(state.get("fov_degrees", self._fov))
+        except (TypeError, ValueError):
+            raise ValueError("camera state contains invalid numeric values")
+        if center.shape != (3,) or euler.shape != (3,):
+            raise ValueError("camera center and euler must contain three values")
+        if not np.isfinite(center).all() or not np.isfinite(euler).all():
+            raise ValueError("camera center and euler must be finite")
+        if not np.isfinite(distance) or distance <= 0.0:
+            raise ValueError("camera distance must be positive and finite")
+        if not np.isfinite(fov) or not 1.0 <= fov <= 179.0:
+            raise ValueError("camera FOV must be between 1 and 179 degrees")
+        self.center = center.copy()
+        self.euler = euler.copy()
+        self.dist = distance
+        self._fov = fov
+        self.need_recalc_view = True
+        self._projection_dirty = True
+        self.update()
 
     def mouseReleaseEvent(self, ev):
         self._mouse_interacting = False
@@ -278,32 +325,36 @@ class BaseGLWidget(QOpenGLWidget):
         self.need_recalc_view = True
         self.update()
 
-    def paintGL(self):
-        if self._projection_dirty:
+    def _render_scene(self, width=None, height=None, force_projection=False, include_center=True):
+        """Draw the current scene into whichever framebuffer is bound."""
+
+        width = self.current_width() if width is None else max(1, int(width))
+        height = self.current_height() if height is None else max(1, int(height))
+        if force_projection:
+            self.projection_matrix = self.get_projection_matrix(width, height)
+            self.update_model_projection()
+            for item in self.items:
+                if item.is_initialized():
+                    item.resize_gl(width, height)
+            self._projection_dirty = False
+        elif self._projection_dirty:
             self.projection_matrix = self.get_projection_matrix()
             self.update_model_projection()
             for item in self.items:
                 if item.is_initialized():
                     item.resize_gl(self.current_width(), self.current_height())
             self._projection_dirty = False
-        # if the camera is moved, update the model view matrix.
         if self.need_recalc_view:
             self.view_matrix = self.get_view_matrix()
             self.need_recalc_view = False
         self.update_model_view()
-
-        # set the background color
-        bgcolor = self.color
-        glClearColor(*bgcolor)
+        glViewport(0, 0, width, height)
+        glClearColor(*self.color)
         glClear(GL_DEPTH_BUFFER_BIT | GL_COLOR_BUFFER_BIT)
         for item in self.items:
             if not item.visible():
                 continue
             if not item.is_initialized():
-                """
-                The item may not be initialized if it is added
-                after the widget is shown, so we need to initialize it here.
-                """
                 item.initialize()
             if self._compatibility_pipeline:
                 glMatrixMode(GL_MODELVIEW)
@@ -317,16 +368,22 @@ class BaseGLWidget(QOpenGLWidget):
                     glPopMatrix()
             else:
                 item.paint()
-
-        # Show center as a point if updated by mouse move event
-        if self._compatibility_pipeline and self.enable_show_center and self.show_center:
+        if (
+            include_center
+            and self._compatibility_pipeline
+            and self.enable_show_center
+            and self.show_center
+        ):
             point_size = np.clip((self.get_K()[0, 0] / self.dist), 10, 100)
             glPointSize(point_size)
             glBegin(GL_POINTS)
-            glColor3f(1.0, 0.0, 0.0)  # Red color for the center point
+            glColor3f(1.0, 0.0, 0.0)
             glVertex3f(*self.center)
             glEnd()
             self.show_center = False
+
+    def paintGL(self):
+        self._render_scene(include_center=True)
 
     def update_movement(self):
         """
@@ -429,8 +486,9 @@ class BaseGLWidget(QOpenGLWidget):
         glMatrixMode(GL_PROJECTION)
         glLoadMatrixf(self.projection_matrix.T)
 
-    def get_projection_matrix(self):
-        w, h = self.current_width(), self.current_height()
+    def get_projection_matrix(self, width=None, height=None):
+        w = self.current_width() if width is None else max(1, int(width))
+        h = self.current_height() if height is None else max(1, int(height))
         dist = self.dist
         near = dist * 0.001
         far = dist * 10000.
@@ -486,6 +544,57 @@ class BaseGLWidget(QOpenGLWidget):
         for item in self.items:
             if item.is_initialized():
                 item.resize_gl(self.current_width(), self.current_height())
+
+    def render_to_array(self, width, height, camera_state=None):
+        """Render one GUI-thread frame into an explicit output-sized FBO."""
+
+        from q3dviewer.render_target import RenderTarget
+
+        width, height = RenderTarget.validate_size(width, height)
+        old_state = self.get_camera_state()
+        old_projection = np.array(self.projection_matrix, copy=True)
+        old_view = np.array(self.view_matrix, copy=True)
+        old_projection_dirty = self._projection_dirty
+        old_need_recalc_view = self.need_recalc_view
+        old_override = self._render_size_override
+        old_width = max(1, int(self.width() * self.devicePixelRatioF()))
+        old_height = max(1, int(self.height() * self.devicePixelRatioF()))
+        target = None
+        self.makeCurrent()
+        try:
+            if camera_state is not None:
+                self.set_camera_state(camera_state)
+            self._render_size_override = (width, height)
+            target = RenderTarget(width, height)
+            target.bind()
+            frame = None
+            self._render_scene(
+                width,
+                height,
+                force_projection=True,
+                include_center=False,
+            )
+            frame = target.read_rgba()
+            self.frame_rendered.emit(frame)
+            return frame
+        finally:
+            if target is not None:
+                target.release()
+            glBindFramebuffer(GL_FRAMEBUFFER, 0)
+            self._render_size_override = old_override
+            self.center = np.asarray(old_state["center"], dtype=np.float64)
+            self.euler = np.asarray(old_state["euler"], dtype=np.float64)
+            self.dist = float(old_state["distance"])
+            self._fov = float(old_state["fov_degrees"])
+            self.projection_matrix = old_projection
+            self.view_matrix = old_view
+            self._projection_dirty = old_projection_dirty
+            self.need_recalc_view = old_need_recalc_view
+            glViewport(0, 0, old_width, old_height)
+            for item in self.items:
+                if item.is_initialized():
+                    item.resize_gl(old_width, old_height)
+            self.doneCurrent()
 
     def capture_frame(self):
         self.makeCurrent()  # Ensure the OpenGL context is current
