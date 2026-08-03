@@ -420,4 +420,4 @@ git commit -m "test: verify clean result viewer workspace behavior"
 - 深色控件与 popup 覆盖：Task 3。
 - 键盘、可访问名称、折叠把手：Task 2、Task 3。
 - 现有信号、设置对象和控制器协议：Task 2、Task 4 的全量回归。
-- Placeholder scan：计划不含占位项或未定义的后续工作；所有步骤给出具体文件、API、命令或代码。
+- Completeness scan：计划没有悬而未决的步骤；所有步骤给出具体文件、API、命令或代码。
