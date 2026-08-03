@@ -153,6 +153,36 @@ def test_jetson_core_profile_renders_gaussian_ply(qapp, tmp_path):
     assert adapter.widget.dist == right_distance
     assert not adapter.item.interactive_preview
 
+    from q3dviewer.utils.maths import euler_to_matrix
+
+    def camera_position():
+        state = adapter.widget.get_camera_state()
+        rotation = euler_to_matrix(np.asarray(state["euler"], dtype=np.float64))
+        return np.asarray(state["center"], dtype=np.float64) + rotation.dot(
+            np.array([0.0, 0.0, state["distance"]])
+        )
+
+    adapter.widget.set_camera_mode("fly")
+    adapter.widget.set_fly_speed(2.0)
+    fly_position = camera_position()
+    QTest.mousePress(
+        adapter.widget,
+        Qt.MouseButton.RightButton,
+        pos=drag_origin,
+    )
+    adapter.widget.mouseMoveEvent(
+        _DragEvent(drag_origin + QPoint(30, 12), Qt.MouseButton.RightButton)
+    )
+    QTest.mouseRelease(
+        adapter.widget,
+        Qt.MouseButton.RightButton,
+        pos=drag_origin + QPoint(30, 12),
+    )
+    QTest.qWait(250)
+    qapp.processEvents()
+    assert camera_position() == pytest.approx(fly_position, abs=1e-5)
+    adapter.widget.set_camera_mode("orbit")
+
     class _WheelEvent:
         def angleDelta(self):
             return QPoint(0, 120)
@@ -207,6 +237,14 @@ def test_jetson_core_profile_renders_gaussian_ply(qapp, tmp_path):
         sphere_frame = adapter.widget.grabFramebuffer()
         assert not sphere_frame.isNull()
         assert sphere_frame.size() == frame.size()
+    for width, height in ((1600, 900), (1024, 680)):
+        adapter.widget.resize(width, height)
+        QTest.qWait(250)
+        qapp.processEvents()
+        sized_frame = adapter.widget.grabFramebuffer()
+        assert not sized_frame.isNull()
+        assert sized_frame.width() == width
+        assert sized_frame.height() == height
     assert not errors
     adapter.release()
     assert not adapter.item.is_initialized()

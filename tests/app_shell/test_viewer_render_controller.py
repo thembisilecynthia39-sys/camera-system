@@ -124,6 +124,40 @@ def test_render_controller_reports_every_frame_and_final_progress(qapp, tmp_path
     assert finished == [tmp_path / "frames"]
 
 
+def test_render_controller_produces_a_real_playable_mp4(qapp, tmp_path):
+    av = pytest.importorskip("av")
+    project = _project(OutputKind.MP4)
+    project = ViewerProject(
+        camera=project.camera,
+        timeline=project.timeline,
+        display=project.display,
+        appearance=project.appearance,
+        render=RenderSettings(
+            width=16,
+            height=16,
+            fps=2.0,
+            output_kind=OutputKind.MP4,
+        ),
+    )
+    output = tmp_path / "tour.mp4"
+    adapter = FakeRenderAdapter()
+    controller = ViewerRenderController(adapter)
+    controller.start(RenderPlan.from_project(project, output))
+    deadline = time.monotonic() + 5.0
+    while controller.is_running and time.monotonic() < deadline:
+        qapp.processEvents()
+        time.sleep(0.005)
+
+    assert not controller.is_running
+    assert output.is_file()
+    with av.open(str(output), mode="r") as container:
+        stream = container.streams.video[0]
+        frames = list(container.decode(stream))
+    assert len(frames) == 3
+    assert stream.width == 16
+    assert stream.height == 16
+
+
 def test_render_controller_cancel_is_terminal_and_does_not_publish(qapp, tmp_path):
     adapter = FakeRenderAdapter()
     output = tmp_path / "cancelled"
