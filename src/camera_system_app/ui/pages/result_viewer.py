@@ -140,7 +140,7 @@ class ResultViewerPage(BasePage):
         self._empty_state = EmptyState(
             "◇",
             "尚未加载 Gaussian 结果",
-            "重建完成后可直接打开结果，也可以选择 Jetson 本地 PLY。",
+            "选择本地 PLY 开始查看。",
             "选择本地 PLY",
         )
         self._empty_state.action_requested.connect(

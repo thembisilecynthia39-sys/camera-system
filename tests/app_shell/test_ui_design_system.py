@@ -126,7 +126,12 @@ def test_viewer_controls_have_dark_scope_object_names(qapp):
 
 def test_result_viewer_controls_are_polished_with_dark_palette(qapp, tmp_path):
     previous_stylesheet = qapp.styleSheet()
-    qapp.setStyleSheet(application_stylesheet())
+    stylesheet = application_stylesheet()
+    assert "QScrollBar::handle:vertical" in stylesheet
+    assert "QComboBox::drop-down" in stylesheet
+    assert "QComboBox::down-arrow" in stylesheet
+    assert "QScrollBar::add-page:vertical" in stylesheet
+    qapp.setStyleSheet(stylesheet)
     page = ResultViewerPage(str(tmp_path / "results"), str(tmp_path / "viewer"))
     try:
         page.show()

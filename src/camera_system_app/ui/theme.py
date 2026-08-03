@@ -626,6 +626,81 @@ _QSS = Template(
         selection-background-color: $dark_interactive;
         selection-color: $dark_background;
     }
+    QWidget#resultPageSurface QWidget#viewerInspector QComboBox::drop-down,
+    QWidget#resultPageSurface QWidget#viewerToolbar QComboBox::drop-down,
+    QWidget#resultPageSurface QWidget#viewerTimeline QComboBox::drop-down {
+        subcontrol-origin: padding;
+        subcontrol-position: top right;
+        width: 24px;
+        background: $dark_viewer_raised;
+        border: none;
+        border-left: 1px solid $dark_viewer_border;
+    }
+    QWidget#resultPageSurface QWidget#viewerInspector QComboBox::down-arrow,
+    QWidget#resultPageSurface QWidget#viewerToolbar QComboBox::down-arrow,
+    QWidget#resultPageSurface QWidget#viewerTimeline QComboBox::down-arrow {
+        image: none;
+        width: 0;
+        height: 0;
+        border-left: 4px solid transparent;
+        border-right: 4px solid transparent;
+        border-top: 5px solid $dark_text_muted;
+    }
+    QWidget#resultPageSurface QWidget#viewerInspector QScrollBar:vertical,
+    QWidget#resultPageSurface QWidget#viewerInspector QScrollBar:horizontal,
+    QWidget#resultPageSurface QWidget#viewerTimeline QScrollBar:vertical,
+    QWidget#resultPageSurface QWidget#viewerTimeline QScrollBar:horizontal {
+        background: $dark_viewer_overlay;
+        border: none;
+    }
+    QWidget#resultPageSurface QWidget#viewerInspector QScrollBar:vertical,
+    QWidget#resultPageSurface QWidget#viewerTimeline QScrollBar:vertical {
+        width: 10px;
+        margin: 0;
+    }
+    QWidget#resultPageSurface QWidget#viewerInspector QScrollBar:horizontal,
+    QWidget#resultPageSurface QWidget#viewerTimeline QScrollBar:horizontal {
+        height: 10px;
+        margin: 0;
+    }
+    QWidget#resultPageSurface QWidget#viewerInspector QScrollBar::handle:vertical,
+    QWidget#resultPageSurface QWidget#viewerTimeline QScrollBar::handle:vertical {
+        min-height: 24px;
+        background: $dark_viewer_hover;
+        border: 1px solid $dark_viewer_border;
+        border-radius: 5px;
+    }
+    QWidget#resultPageSurface QWidget#viewerInspector QScrollBar::handle:horizontal,
+    QWidget#resultPageSurface QWidget#viewerTimeline QScrollBar::handle:horizontal {
+        min-width: 24px;
+        background: $dark_viewer_hover;
+        border: 1px solid $dark_viewer_border;
+        border-radius: 5px;
+    }
+    QWidget#resultPageSurface QWidget#viewerInspector QScrollBar::add-line:vertical,
+    QWidget#resultPageSurface QWidget#viewerInspector QScrollBar::sub-line:vertical,
+    QWidget#resultPageSurface QWidget#viewerTimeline QScrollBar::add-line:vertical,
+    QWidget#resultPageSurface QWidget#viewerTimeline QScrollBar::sub-line:vertical {
+        height: 0;
+        background: transparent;
+    }
+    QWidget#resultPageSurface QWidget#viewerInspector QScrollBar::add-line:horizontal,
+    QWidget#resultPageSurface QWidget#viewerInspector QScrollBar::sub-line:horizontal,
+    QWidget#resultPageSurface QWidget#viewerTimeline QScrollBar::add-line:horizontal,
+    QWidget#resultPageSurface QWidget#viewerTimeline QScrollBar::sub-line:horizontal {
+        width: 0;
+        background: transparent;
+    }
+    QWidget#resultPageSurface QWidget#viewerInspector QScrollBar::add-page:vertical,
+    QWidget#resultPageSurface QWidget#viewerInspector QScrollBar::sub-page:vertical,
+    QWidget#resultPageSurface QWidget#viewerTimeline QScrollBar::add-page:vertical,
+    QWidget#resultPageSurface QWidget#viewerTimeline QScrollBar::sub-page:vertical,
+    QWidget#resultPageSurface QWidget#viewerInspector QScrollBar::add-page:horizontal,
+    QWidget#resultPageSurface QWidget#viewerInspector QScrollBar::sub-page:horizontal,
+    QWidget#resultPageSurface QWidget#viewerTimeline QScrollBar::add-page:horizontal,
+    QWidget#resultPageSurface QWidget#viewerTimeline QScrollBar::sub-page:horizontal {
+        background: $dark_viewer_overlay;
+    }
     QWidget#resultPageSurface QWidget#viewerTimeline QSlider::groove:horizontal {
         height: 4px;
         background: $dark_viewer_border;
