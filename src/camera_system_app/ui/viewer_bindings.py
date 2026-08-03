@@ -3,14 +3,28 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 from pathlib import Path
 
-from PySide6.QtCore import QObject
-from PySide6.QtWidgets import QFileDialog
+from PySide6.QtCore import QEvent, QObject, Qt
+from PySide6.QtWidgets import QFileDialog, QMessageBox
+
+from camera_system_app.application.viewer_session import ViewerSession
+from camera_system_app.domain.viewer import (
+    DisplayMode,
+    QualityPreset,
+    ViewerProject,
+)
 
 from camera_system_app.infrastructure.adapters.q3dviewer_adapter import (
     Q3DViewerAdapter,
     prepare_q3dviewer,
+)
+from camera_system_app.infrastructure.viewer_project_store import (
+    ViewerProjectFormatError,
+    ViewerProjectNotFoundError,
+    ViewerProjectSourceMismatchError,
+    ViewerProjectStore,
 )
 from camera_system_app.workers import ViewerLoadWorker
 
@@ -23,6 +37,10 @@ class ViewerBindings(QObject):
         self._adapter = None
         self._worker = None
         self._capture_adapter = None
+        self._session = None
+        self._project_store = ViewerProjectStore()
+        self._project_sidecar = None
+        self._presentation_state = None
         self._pending_open_path: str | None = None
         self._logger = logging.getLogger("camera_system_app.ui.viewer")
         window.result_page.open_local_result_requested.connect(self.open_result)
@@ -30,7 +48,27 @@ class ViewerBindings(QObject):
             self.select_local_result
         )
         window.result_page.reset_view_requested.connect(self.reset_view)
+        window.result_page.fit_view_requested.connect(self.fit_view)
+        window.result_page.display_mode_requested.connect(self.set_display_mode)
+        window.result_page.quality_requested.connect(self.set_quality)
+        window.result_page.display_settings_changed.connect(
+            self.set_display_settings
+        )
+        window.result_page.appearance_settings_changed.connect(
+            self.set_appearance_settings
+        )
+        window.result_page.render_settings_changed.connect(
+            self.set_render_settings
+        )
+        window.result_page.presentation_requested.connect(
+            lambda: self.set_presentation_mode(not self.is_presentation_mode)
+        )
         window.navigation.currentRowChanged.connect(self._on_page_changed)
+        window.installEventFilter(self)
+
+    @property
+    def is_presentation_mode(self) -> bool:
+        return self._presentation_state is not None
 
     def set_capture_adapter(self, adapter) -> None:
         self._capture_adapter = adapter
@@ -79,6 +117,164 @@ class ViewerBindings(QObject):
     def reset_view(self) -> None:
         if self._adapter is not None:
             self._adapter.reset_view()
+            self._sync_camera_from_adapter()
+
+    def fit_view(self) -> None:
+        if self._adapter is not None:
+            self._adapter.fit_scene()
+            self._sync_camera_from_adapter()
+
+    def set_display_mode(self, mode: str) -> None:
+        if self._session is None:
+            return
+        self._session.set_display_settings(
+            replace(self._session.project.display, mode=DisplayMode(mode))
+        )
+        self._mark_project_dirty()
+
+    def set_quality(self, quality: str) -> None:
+        if self._session is None:
+            return
+        self._session.set_display_settings(
+            replace(self._session.project.display, quality=QualityPreset(quality))
+        )
+        self._mark_project_dirty()
+
+    def set_display_settings(self, settings) -> None:
+        if self._session is None:
+            return
+        self._session.set_display_settings(settings)
+        self._mark_project_dirty()
+
+    def set_appearance_settings(self, settings) -> None:
+        if self._session is None:
+            return
+        self._session.set_appearance_settings(settings)
+        self._mark_project_dirty()
+
+    def set_render_settings(self, settings) -> None:
+        if self._session is None:
+            return
+        self._session.set_render_settings(settings)
+        self._mark_project_dirty()
+
+    def _mark_project_dirty(self) -> None:
+        if self._session is not None:
+            suffix = " · 项目有未保存修改" if self._session.is_dirty else ""
+            self.window.statusBar().showMessage("● 3DGS 查看器就绪" + suffix)
+
+    def _sync_camera_from_adapter(self) -> None:
+        if self._session is not None and self._adapter is not None:
+            pose = self._adapter.get_camera_pose()
+            self._session.set_camera_pose(pose)
+            self._mark_project_dirty()
+
+    def _load_project_state(
+        self,
+        source_path: Path,
+        fallback: ViewerProject,
+        *,
+        allow_stale: bool = False,
+        prompt_stale: bool = False,
+    ) -> ViewerProject:
+        sidecar = self._project_store.default_path(source_path)
+        self._project_sidecar = sidecar
+        if not sidecar.is_file():
+            return fallback
+        try:
+            return self._project_store.load(
+                sidecar,
+                source_path=source_path,
+                allow_source_mismatch=allow_stale,
+            )
+        except ViewerProjectSourceMismatchError:
+            if prompt_stale:
+                answer = QMessageBox.question(
+                    self.window,
+                    "查看器项目源文件已变化",
+                    "旁车项目记录的源文件与当前 PLY 不一致。仍然加载旧的相机和显示设置吗？",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.No,
+                )
+                if answer == QMessageBox.StandardButton.Yes:
+                    return self._project_store.load(
+                        sidecar,
+                        source_path=source_path,
+                        allow_source_mismatch=True,
+                    )
+            self._logger.warning("Viewer sidecar source identity mismatch: %s", sidecar)
+            return fallback
+        except (ViewerProjectNotFoundError, ViewerProjectFormatError) as exc:
+            self._logger.warning("Viewer sidecar was not applied: %s", exc)
+            return fallback
+
+    def save_project(self):
+        if self._session is None:
+            return None
+        path = self._project_sidecar
+        if path is None:
+            path = self._project_store.default_path(self._session.project.source_path)
+        saved = self._project_store.save(self._session.project, path)
+        self._project_sidecar = saved
+        self._session.mark_clean()
+        self.window.statusBar().showMessage("● 3DGS 查看器项目已保存：{}".format(saved))
+        return saved
+
+    def save_project_as(self):
+        if self._session is None:
+            return None
+        selected, _ = QFileDialog.getSaveFileName(
+            self.window,
+            "保存 3DGS 查看器项目",
+            str(self._project_sidecar or "scene.splatview.json"),
+            "3DGS 查看器项目 (*.splatview.json)",
+        )
+        if not selected:
+            return None
+        self._project_sidecar = Path(selected)
+        return self.save_project()
+
+    def set_presentation_mode(self, enabled: bool) -> None:
+        enabled = bool(enabled)
+        if enabled and self._presentation_state is None:
+            sidebar = self.window.findChild(type(self.window.centralWidget()), "sidebar")
+            if sidebar is None:
+                from PySide6.QtWidgets import QFrame
+
+                sidebar = self.window.findChild(QFrame, "sidebar")
+            self._presentation_state = {
+                "sidebar": sidebar,
+                "sidebar_visible": bool(sidebar and sidebar.isVisible()),
+                "status_visible": self.window.statusBar().isVisible(),
+                "fullscreen": self.window.isFullScreen(),
+            }
+            if sidebar is not None:
+                sidebar.hide()
+            self.window.statusBar().hide()
+            self.window.showFullScreen()
+            return
+        if not enabled and self._presentation_state is not None:
+            state = self._presentation_state
+            self._presentation_state = None
+            if state["fullscreen"]:
+                self.window.showFullScreen()
+            else:
+                self.window.showNormal()
+            sidebar = state["sidebar"]
+            if sidebar is not None:
+                sidebar.setVisible(state["sidebar_visible"])
+            self.window.statusBar().setVisible(state["status_visible"])
+
+    def eventFilter(self, watched, event):
+        if (
+            watched is self.window
+            and self.is_presentation_mode
+            and event.type() == QEvent.Type.KeyPress
+            and event.key() == Qt.Key.Key_Escape
+        ):
+            self.set_presentation_mode(False)
+            return True
+        return super().eventFilter(watched, event)
 
     def select_local_result(self) -> None:
         selected, _ = QFileDialog.getOpenFileName(
@@ -112,6 +308,25 @@ class ViewerBindings(QObject):
                     self.window.stack.currentWidget() is self.window.result_page
                 )
             count = self._adapter.set_gaussians(gaussians, bounds=bounds)
+            source = Path(path).resolve()
+            source_size = source.stat().st_size
+            source_sha256 = self._project_store.sha256_file(source)
+            fallback = ViewerProject(
+                source_path=str(source),
+                source_size=source_size,
+                source_sha256=source_sha256,
+                camera=self._adapter.get_camera_pose(),
+            )
+            project = self._load_project_state(
+                source,
+                fallback,
+                prompt_stale=True,
+            )
+            self._session = ViewerSession(self._adapter, project)
+            self._session.apply_project(project)
+            self.window.result_page._inspector.set_display_settings(project.display)
+            self.window.result_page._inspector.set_appearance_settings(project.appearance)
+            self.window.result_page._inspector.set_render_settings(project.render)
             self.window.result_page.set_viewer_widget(
                 self._adapter.widget, path, count
             )
