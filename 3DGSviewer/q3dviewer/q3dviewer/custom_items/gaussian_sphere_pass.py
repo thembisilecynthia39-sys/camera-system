@@ -34,6 +34,7 @@ class GaussianSpherePass:
             "line_width": 1.0,
             "color_mode": "gaussian",
             "color": (0.35, 0.78, 1.0),
+            "all_instances": False,
         }
 
     def set_settings(self, **changes):
@@ -60,6 +61,7 @@ class GaussianSpherePass:
             "line_width": line_width,
             "color_mode": color_mode,
             "color": color,
+            "all_instances": bool(values["all_instances"]),
         }
         return dict(self.settings)
 
@@ -100,11 +102,9 @@ class GaussianSpherePass:
             return False
         if item.need_updateGS:
             item.updateGS()
-        draw_count = (
-            self.gpu_data.preview_count
-            if item.interactive_preview
-            else self.gpu_data.count
-        )
+        all_instances = bool(self.settings["all_instances"])
+        use_preview = item.interactive_preview and not all_instances
+        draw_count = self.gpu_data.preview_count if use_preview else self.gpu_data.count
         if draw_count <= 0:
             return False
         view = np.asarray(widget.view_matrix, dtype=np.float32)
@@ -128,7 +128,7 @@ class GaussianSpherePass:
         set_uniform(self.program, np.array([width, height], dtype=np.float32), "win_size")
         set_uniform(self.program, int(self.gpu_data.sh_dim), "data_sh_dim")
         set_uniform(self.program, int(self.gpu_data.count), "gs_num")
-        set_uniform(self.program, int(item.interactive_preview), "preview_mode")
+        set_uniform(self.program, int(use_preview), "preview_mode")
         set_uniform(self.program, float(values["sigma_multiplier"]), "sphere_sigma_multiplier")
         set_uniform(self.program, float(values["opacity"]), "sphere_opacity")
         set_uniform(self.program, float(values["line_width"]), "line_width")
@@ -144,8 +144,8 @@ class GaussianSpherePass:
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, self.gpu_data.ssbo_gs)
         glBindBufferBase(
             GL_SHADER_STORAGE_BUFFER,
-            4 if item.interactive_preview else 1,
-            self.gpu_data.ssbo_preview_gi if item.interactive_preview else self.gpu_data.ssbo_gi,
+            4 if use_preview else 1,
+            self.gpu_data.ssbo_preview_gi if use_preview else self.gpu_data.ssbo_gi,
         )
         glBindVertexArray(self.vao)
         raw_glDrawElementsInstanced(

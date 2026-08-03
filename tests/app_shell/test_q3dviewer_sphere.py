@@ -117,12 +117,14 @@ def test_render_controller_exposes_confirmed_sphere_defaults_and_settings():
         opacity=0.35,
         line_width=2.0,
         color=(0.1, 0.2, 0.3),
+        all_instances=True,
     )
 
     assert settings["sigma_multiplier"] == pytest.approx(4.0)
     assert settings["opacity"] == pytest.approx(0.35)
     assert settings["line_width"] == pytest.approx(2.0)
     assert settings["color"] == pytest.approx((0.1, 0.2, 0.3))
+    assert settings["all_instances"] is True
 
 
 def test_sphere_shader_failure_keeps_standard_renderer_available(monkeypatch, tmp_path):
@@ -136,11 +138,16 @@ def test_sphere_shader_failure_keeps_standard_renderer_available(monkeypatch, tm
         lambda *_args: (_ for _ in ()).throw(RuntimeError("sphere shader unavailable")),
     )
     item = GaussianItem(sort_enabled=False, sort_backend="opengl")
+    availability = []
+    item.render_controller.set_sphere_availability_callback(
+        lambda available, error: availability.append((available, error))
+    )
 
     item.render_controller.initialize_gl(tmp_path)
 
     assert item.render_controller.sphere_available is False
     assert "unavailable" in item.render_controller.sphere_error
+    assert availability == [(False, "sphere shader unavailable")]
     assert item.set_display_mode("sphere_solid") == "standard"
     assert item.render_controller.mode == "standard"
 

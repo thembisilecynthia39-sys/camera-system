@@ -87,6 +87,7 @@ class FakeRenderAdapter:
         self.poses = []
         self.display = []
         self.appearance = []
+        self.appearance_settings = AppearanceSettings(exposure=0.5)
         self.capture_count = 0
 
     def set_display_settings(self, settings):
@@ -94,6 +95,7 @@ class FakeRenderAdapter:
 
     def set_appearance_settings(self, settings):
         self.appearance.append(settings)
+        self.appearance_settings = settings
 
     def set_camera_pose(self, pose):
         self.poses.append(pose)
@@ -122,6 +124,26 @@ def test_render_controller_reports_every_frame_and_final_progress(qapp, tmp_path
     assert progress[-1] == 1.0
     assert len(adapter.poses) == 3
     assert finished == [tmp_path / "frames"]
+
+
+def test_final_render_bypasses_gpu_appearance_once_and_restores_previous_state(
+    qapp, tmp_path
+):
+    adapter = FakeRenderAdapter()
+    original = adapter.appearance_settings
+    plan = RenderPlan.from_project(_project(), tmp_path / "frames")
+    controller = ViewerRenderController(adapter)
+
+    controller.start(plan)
+    deadline = time.monotonic() + 5.0
+    while controller.is_running and time.monotonic() < deadline:
+        qapp.processEvents()
+        time.sleep(0.005)
+
+    assert not controller.is_running
+    assert adapter.appearance[0].tone_mapping == "none"
+    assert adapter.appearance[0].exposure == 0.0
+    assert adapter.appearance_settings == original
 
 
 def test_render_controller_produces_a_real_playable_mp4(qapp, tmp_path):
@@ -158,6 +180,28 @@ def test_render_controller_produces_a_real_playable_mp4(qapp, tmp_path):
     assert stream.height == 16
 
 
+def test_render_plan_resamples_timeline_at_the_requested_output_fps(tmp_path):
+    project = _project()
+    project = ViewerProject(
+        camera=project.camera,
+        timeline=project.timeline,
+        display=project.display,
+        appearance=project.appearance,
+        render=RenderSettings(
+            width=3,
+            height=2,
+            fps=4.0,
+            output_kind=OutputKind.PNG_SEQUENCE,
+        ),
+    )
+
+    plan = RenderPlan.from_project(project, tmp_path / "frames")
+
+    assert plan.timeline.fps == 4.0
+    assert plan.frame_count == 5
+    assert plan.frame_pose(4) == project.timeline.shots[0].end
+
+
 def test_render_controller_cancel_is_terminal_and_does_not_publish(qapp, tmp_path):
     adapter = FakeRenderAdapter()
     output = tmp_path / "cancelled"
@@ -184,12 +228,20 @@ def test_render_dialog_exposes_frozen_output_summary_and_cancel(qapp, tmp_path):
         render=project.render,
     )
     dialog = ViewerRenderDialog(
-        RenderPlan.from_project(project, tmp_path / "frames")
+        RenderPlan.from_project(project, tmp_path / "frames"),
+        metrics={
+            "gaussians": 123456,
+            "estimated_gpu_bytes": 987654321,
+            "sort_gpu_ms": 4.5,
+        },
     )
     assert "3 × 2" in dialog.resolution_label.text()
     assert "3" in dialog.frame_count_label.text()
     assert "1.00" in dialog.duration_label.text()
     assert "Gaussian + 球体" in dialog.mode_label.text()
+    assert "123,456" in dialog.gaussian_count_label.text()
+    assert "941.9 MiB" in dialog.gpu_memory_label.text()
+    assert "framebuffer" in dialog.memory_budget_label.text()
     assert dialog.progress_bar.value() == 0
     dialog.set_progress(0.5)
     assert "1 / 3" in dialog.frame_progress_label.text()

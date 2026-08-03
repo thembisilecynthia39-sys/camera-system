@@ -348,7 +348,7 @@ class ViewerTimelineWidget(QWidget):
         pose = self._current_pose
         shot_number = len(self._timeline.shots) + 1
         shot = CameraShot(
-            "shot-{}".format(shot_number),
+            self._next_shot_id("shot"),
             "镜头 {}".format(shot_number),
             pose,
             pose,
@@ -374,9 +374,7 @@ class ViewerTimelineWidget(QWidget):
         original = self._timeline.shots[index]
         shot = replace(
             original,
-            shot_id="{}-copy-{}".format(
-                original.shot_id, len(self._timeline.shots) + 1
-            ),
+            shot_id=self._next_shot_id("{}-copy".format(original.shot_id)),
             name=original.name + "副本",
         )
         shots = (
@@ -431,6 +429,13 @@ class ViewerTimelineWidget(QWidget):
         self._timeline = timeline
         self.set_timeline(timeline)
         self.timeline_changed.emit(timeline)
+
+    def _next_shot_id(self, prefix):
+        used = {shot.shot_id for shot in self._timeline.shots}
+        index = 1
+        while "{}-{}".format(prefix, index) in used:
+            index += 1
+        return "{}-{}".format(prefix, index)
 
     def _update_action_state(self):
         has_shots = bool(self._timeline.shots)

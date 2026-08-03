@@ -23,7 +23,7 @@ class ViewerRenderDialog(QDialog):
 
     cancel_requested = Signal()
 
-    def __init__(self, plan, parent=None):
+    def __init__(self, plan, metrics=None, parent=None):
         super().__init__(parent)
         self.setObjectName("viewerRenderDialog")
         self.setWindowTitle("导出 3DGS 漫游")
@@ -103,6 +103,32 @@ class ViewerRenderDialog(QDialog):
         self.eta_label.setObjectName("mutedText")
         root.addWidget(self.eta_label)
         self._plan = plan
+        metrics = dict(metrics or {})
+        gaussian_count = metrics.get("gaussians")
+        gpu_bytes = metrics.get("estimated_gpu_bytes")
+        self.gaussian_count_label = QLabel(
+            "{:,}".format(int(gaussian_count))
+            if gaussian_count is not None
+            else "未知"
+        )
+        self.gpu_memory_label = QLabel(
+            "{:.1f} MiB".format(float(gpu_bytes) / (1024.0 * 1024.0))
+            if gpu_bytes is not None
+            else "未知"
+        )
+        framebuffer_bytes = plan.render.width * plan.render.height * 4 * 2
+        self.memory_budget_label = QLabel(
+            "framebuffer 约 {}".format(self._format_bytes(framebuffer_bytes))
+        )
+        self.encoder_label = QLabel(
+            "auto：Jetson GStreamer H.264，缺失时回退 PyAV"
+            if plan.render.output_kind is OutputKind.MP4
+            else "Pillow PNG 编码"
+        )
+        form.addRow("Gaussian 数量", self.gaussian_count_label)
+        form.addRow("估算 GPU 数据", self.gpu_memory_label)
+        form.addRow("输出内存预算", self.memory_budget_label)
+        form.addRow("编码后端", self.encoder_label)
         self._started_at = time.monotonic()
 
         buttons = QHBoxLayout()
@@ -149,6 +175,18 @@ class ViewerRenderDialog(QDialog):
         except (RuntimeError, TypeError):
             pass
         self.cancel_button.clicked.connect(self.accept)
+
+    @staticmethod
+    def _format_bytes(value):
+        value = float(value)
+        units = ("B", "KiB", "MiB", "GiB")
+        index = 0
+        while value >= 1024.0 and index < len(units) - 1:
+            value /= 1024.0
+            index += 1
+        if index == 0:
+            return "{} B".format(int(value))
+        return "{:.1f} {}".format(value, units[index])
 
 
 __all__ = ["ViewerRenderDialog"]

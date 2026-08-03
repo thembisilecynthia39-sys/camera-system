@@ -39,6 +39,7 @@ class ResultViewerPage(BasePage):
     camera_mode_changed = Signal(str)
     fly_speed_changed = Signal(float)
     fov_changed = Signal(float)
+    camera_pose_changed = Signal(object)
     bookmark_add_requested = Signal(str)
     bookmark_load_requested = Signal(str)
     bookmark_delete_requested = Signal(str)
@@ -61,6 +62,8 @@ class ResultViewerPage(BasePage):
         self.result_root = Path(result_root).resolve()
         self._viewer_widget = None
         self._narrow_mode = False
+        self._sphere_available = True
+        self._sphere_error = ""
         self._banner = StatusBanner("当前没有已完成的本地重建结果。")
         self.layout.addWidget(self._banner)
 
@@ -142,6 +145,7 @@ class ResultViewerPage(BasePage):
         self._inspector.camera_mode_changed.connect(self.camera_mode_changed.emit)
         self._inspector.fly_speed_changed.connect(self.fly_speed_changed.emit)
         self._inspector.fov_changed.connect(self.fov_changed.emit)
+        self._inspector.camera_pose_changed.connect(self.camera_pose_changed.emit)
         self._inspector.bookmark_add_requested.connect(
             self.bookmark_add_requested.emit
         )
@@ -190,6 +194,7 @@ class ResultViewerPage(BasePage):
 
     def show_loading(self, path: str) -> None:
         self._source_card.show()
+        self.set_sphere_modes_available(True)
         self._banner.set_status("正在后台解析 PLY：{}".format(path), "success")
         self._action.setEnabled(False)
         self._reset.setEnabled(False)
@@ -209,10 +214,19 @@ class ResultViewerPage(BasePage):
         self._inspector.setVisible(True)
         self._timeline.setVisible(True)
         self._apply_responsive_layout()
-        self._banner.set_status(
-            "已加载 {:,} 个 Gaussian：{}".format(gaussian_count, path),
-            "success",
-        )
+        if self._sphere_available:
+            self._banner.set_status(
+                "已加载 {:,} 个 Gaussian：{}".format(gaussian_count, path),
+                "success",
+            )
+        else:
+            self._banner.set_status(
+                "外接球显示不可用：{}；已加载 {:,} 个 Gaussian，标准 Gaussian 仍可使用".format(
+                    self._sphere_error or "渲染器不支持",
+                    gaussian_count,
+                ),
+                "warning",
+            )
         self._action.setEnabled(True)
         self._action.setText("重新加载")
         self._reset.setEnabled(True)
@@ -237,6 +251,19 @@ class ResultViewerPage(BasePage):
 
     def set_bookmarks(self, bookmarks) -> None:
         self._inspector.set_bookmarks(bookmarks)
+
+    def set_sphere_modes_available(self, available, error="") -> None:
+        self._sphere_available = bool(available)
+        self._sphere_error = str(error or "")
+        self._toolbar.set_sphere_modes_available(available, error)
+        self._inspector.set_sphere_modes_available(available, error)
+        if not available:
+            self._banner.set_status(
+                "外接球显示不可用：{}；标准 Gaussian 仍可继续使用".format(
+                    error or "渲染器不支持"
+                ),
+                "warning",
+            )
 
     def set_playing(self, playing: bool) -> None:
         self._toolbar.set_playing(playing)

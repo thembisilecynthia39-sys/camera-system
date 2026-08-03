@@ -245,6 +245,9 @@ class CameraTimeline:
         shots = tuple(self.shots)
         if any(not isinstance(shot, CameraShot) for shot in shots):
             raise ViewerValidationError("timeline shots must be CameraShot values")
+        shot_ids = [shot.shot_id for shot in shots]
+        if len(set(shot_ids)) != len(shot_ids):
+            raise ViewerValidationError("timeline shot_id values must be unique")
         fps = _finite_float(self.fps, "timeline fps")
         if not 1.0 <= fps <= 240.0:
             raise ViewerValidationError("timeline fps must be between 1 and 240")
@@ -284,6 +287,7 @@ class DisplaySettings:
     sphere_line_width: float = 1.0
     sphere_color_mode: str = "gaussian"
     sphere_color: Color3 = (0.35, 0.78, 1.0)
+    sphere_all_instances: bool = False
     background_color: Color3 = (0.025, 0.035, 0.055)
     show_grid: bool = False
     show_camera_guides: bool = False
@@ -306,6 +310,7 @@ class DisplaySettings:
         object.__setattr__(self, "sphere_line_width", line_width)
         object.__setattr__(self, "sphere_color_mode", str(self.sphere_color_mode))
         object.__setattr__(self, "sphere_color", _color3(self.sphere_color, "sphere_color"))
+        object.__setattr__(self, "sphere_all_instances", bool(self.sphere_all_instances))
         object.__setattr__(self, "background_color", _color3(self.background_color, "background_color"))
         object.__setattr__(self, "show_grid", bool(self.show_grid))
         object.__setattr__(self, "show_camera_guides", bool(self.show_camera_guides))
@@ -320,6 +325,7 @@ class DisplaySettings:
             "sphere_line_width": self.sphere_line_width,
             "sphere_color_mode": self.sphere_color_mode,
             "sphere_color": list(self.sphere_color),
+            "sphere_all_instances": self.sphere_all_instances,
             "background_color": list(self.background_color),
             "show_grid": self.show_grid,
             "show_camera_guides": self.show_camera_guides,
@@ -336,6 +342,7 @@ class DisplaySettings:
             sphere_line_width=value.get("sphere_line_width", 1.0),
             sphere_color_mode=value.get("sphere_color_mode", "gaussian"),
             sphere_color=value.get("sphere_color", (0.35, 0.78, 1.0)),
+            sphere_all_instances=value.get("sphere_all_instances", False),
             background_color=value.get("background_color", (0.025, 0.035, 0.055)),
             show_grid=value.get("show_grid", False),
             show_camera_guides=value.get("show_camera_guides", False),
@@ -366,7 +373,12 @@ class AppearanceSettings:
         if not 0.0 <= vignette <= 1.0 or not 0.0 <= sharpening <= 1.0:
             raise ViewerValidationError("vignette and sharpening must be between 0 and 1")
         object.__setattr__(self, "exposure", exposure)
-        object.__setattr__(self, "tone_mapping", str(self.tone_mapping))
+        tone_mapping = str(self.tone_mapping).lower().strip()
+        if tone_mapping not in ("none", "reinhard", "aces"):
+            raise ViewerValidationError(
+                "unsupported tone mapping: {}".format(self.tone_mapping)
+            )
+        object.__setattr__(self, "tone_mapping", tone_mapping)
         object.__setattr__(self, "contrast", contrast)
         object.__setattr__(self, "saturation", saturation)
         object.__setattr__(self, "vignette", vignette)

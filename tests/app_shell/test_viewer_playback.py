@@ -168,3 +168,22 @@ def test_timeline_supports_frame_and_shot_navigation(qapp):
     assert widget.selected_shot_index == 1
     widget.previous_shot_button.click()
     assert widget.selected_shot_index == 0
+
+
+def test_timeline_generates_unique_shot_ids_after_delete_and_add(qapp):
+    pose = CameraPose(position=(0.0, 0.0, 5.0))
+    timeline = CameraTimeline(
+        shots=(
+            CameraShot("shot-1", "一", pose, pose),
+            CameraShot("shot-2", "二", pose, pose),
+        )
+    )
+    widget = ViewerTimelineWidget()
+    widget.set_timeline(timeline)
+    widget.delete_button.click()
+    widget.set_current_pose(pose)
+    widget.add_button.click()
+
+    ids = [shot.shot_id for shot in widget.timeline.shots]
+    assert len(ids) == 2
+    assert len(ids) == len(set(ids))

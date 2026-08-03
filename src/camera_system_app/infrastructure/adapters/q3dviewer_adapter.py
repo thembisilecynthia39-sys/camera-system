@@ -89,6 +89,7 @@ class Q3DViewerAdapter(QObject):
     """Own one embedded q3dviewer GLWidget and its existing GaussianItem."""
 
     rendering_failed = Signal(str)
+    sphere_availability_changed = Signal(bool, str)
 
     def __init__(self, project_root: Path, parent=None) -> None:
         super().__init__(parent)
@@ -109,6 +110,9 @@ class Q3DViewerAdapter(QObject):
             sort_backend="opengl",
             sort_min_interval=0.10,
         )
+        self.item.render_controller.set_sphere_availability_callback(
+            self._on_sphere_availability_changed
+        )
         self.widget.add_item_with_name("gaussian", self.item)
         self._default_center = np.zeros(3, dtype=np.float64)
         self._default_distance = 4.0
@@ -121,6 +125,9 @@ class Q3DViewerAdapter(QObject):
         self.widget.interaction_finished.connect(self._end_interaction)
         self._released = False
         self._active = True
+
+    def _on_sphere_availability_changed(self, available: bool, error: str) -> None:
+        self.sphere_availability_changed.emit(bool(available), str(error or ""))
 
     def set_gaussians(self, gaussians: Any, bounds=None) -> int:
         """Upload CPU Gaussian data on the GUI thread and fit the camera."""
@@ -187,6 +194,7 @@ class Q3DViewerAdapter(QObject):
             line_width=settings.sphere_line_width,
             color_mode=settings.sphere_color_mode,
             color=settings.sphere_color,
+            all_instances=settings.sphere_all_instances,
         )
         self.widget.set_color(
             np.asarray(

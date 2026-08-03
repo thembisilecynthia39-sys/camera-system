@@ -8,6 +8,7 @@ from PySide6.QtCore import QTimer, QObject, Signal
 
 from camera_system_app.application.viewer_appearance import apply_appearance
 from camera_system_app.application.viewer_render_plan import RenderPlan, RenderPlanError
+from camera_system_app.domain.viewer import AppearanceSettings
 from camera_system_app.infrastructure.viewer_encoder import (
     EncoderBackpressureError,
     EncoderConfig,
@@ -46,6 +47,7 @@ class ViewerRenderController(QObject):
         self._finalizing = False
         self._error = None
         self._restore_callback = None
+        self._previous_appearance = None
         self._progress = 0.0
 
     @property
@@ -81,6 +83,9 @@ class ViewerRenderController(QObject):
         self._pending_frame = None
         self._finalizing = False
         self._error = None
+        self._previous_appearance = getattr(
+            self.adapter, "appearance_settings", None
+        )
         self._set_progress(0.0)
         try:
             encoder_config = EncoderConfig(
@@ -96,7 +101,10 @@ class ViewerRenderController(QObject):
             self._encoder = self.encoder_factory(encoder_config)
             self._encoder.start()
             self.adapter.set_display_settings(plan.display)
-            self.adapter.set_appearance_settings(plan.appearance)
+            # The final readback is post-processed once on the CPU. Keep the
+            # GPU draw neutral during export so exposure/tone mapping/etc. do
+            # not get applied a second time before apply_appearance().
+            self.adapter.set_appearance_settings(AppearanceSettings(tone_mapping="none"))
             set_quality = getattr(self.adapter, "set_quality", None)
             if set_quality is not None:
                 set_quality(plan.render.quality.value)
@@ -237,9 +245,18 @@ class ViewerRenderController(QObject):
     def _restore(self) -> None:
         callback = self._restore_callback
         self._restore_callback = None
+        previous_appearance = self._previous_appearance
+        self._previous_appearance = None
+        callback_succeeded = False
         if callback is not None:
             try:
                 callback()
+                callback_succeeded = True
+            except Exception:
+                pass
+        if not callback_succeeded and previous_appearance is not None:
+            try:
+                self.adapter.set_appearance_settings(previous_appearance)
             except Exception:
                 pass
 

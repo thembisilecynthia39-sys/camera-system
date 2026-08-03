@@ -61,6 +61,23 @@ def test_viewer_toolbar_syncing_playback_state_does_not_emit_commands(qapp):
     assert commands == []
 
 
+def test_sphere_controls_disable_when_renderer_reports_shader_unavailable(qapp):
+    toolbar = ViewerToolbar()
+    inspector = ViewerInspector()
+
+    toolbar.set_sphere_modes_available(False, "shader unavailable")
+    inspector.set_sphere_modes_available(False, "shader unavailable")
+
+    for combo in (toolbar.display_mode_combo, inspector.display_mode_combo):
+        for value in (DisplayMode.SPHERE_WIREFRAME.value, DisplayMode.SPHERE_SOLID.value, DisplayMode.OVERLAY.value):
+            index = combo.findData(value)
+            assert combo.model().item(index).isEnabled() is False
+        assert combo.currentData() == DisplayMode.STANDARD.value
+    assert inspector.sphere_sigma_multiplier.isEnabled() is False
+    assert inspector.sphere_opacity.isEnabled() is False
+    assert inspector.sphere_line_width.isEnabled() is False
+
+
 def test_viewer_inspector_groups_viewer_controls_into_collapsible_sections(qapp):
     inspector = ViewerInspector()
     section_names = {section.title() for section in inspector.sections}
@@ -86,6 +103,55 @@ def test_viewer_inspector_emits_display_settings_with_sphere_defaults(qapp):
     assert isinstance(emitted[-1], DisplaySettings)
     assert emitted[-1].mode is DisplayMode.SPHERE_WIREFRAME
     assert emitted[-1].sphere_sigma_multiplier == 4.0
+
+
+def test_viewer_inspector_can_request_all_spheres_during_interaction(qapp):
+    inspector = ViewerInspector()
+    emitted = []
+    inspector.display_settings_changed.connect(emitted.append)
+
+    inspector.sphere_all_instances.setChecked(True)
+
+    assert emitted
+    assert emitted[-1].sphere_all_instances is True
+
+
+def test_viewer_inspector_exposes_tone_mapping_choices(qapp):
+    inspector = ViewerInspector()
+    emitted = []
+    inspector.appearance_settings_changed.connect(emitted.append)
+
+    inspector.tone_mapping_combo.setCurrentIndex(
+        inspector.tone_mapping_combo.findData("reinhard")
+    )
+
+    assert emitted
+    assert emitted[-1].tone_mapping == "reinhard"
+
+
+def test_viewer_inspector_emits_editable_background_color(qapp):
+    inspector = ViewerInspector()
+    emitted = []
+    inspector.display_settings_changed.connect(emitted.append)
+
+    inspector.background_color_edit.setText("#336699")
+    inspector.background_color_edit.editingFinished.emit()
+
+    assert emitted
+    assert emitted[-1].background_color == (0.2, 0.4, 0.6)
+
+
+def test_viewer_inspector_disables_transparency_for_mp4_output(qapp):
+    inspector = ViewerInspector()
+
+    inspector.output_kind.setCurrentIndex(
+        inspector.output_kind.findData("mp4")
+    )
+    assert inspector.transparent_background.isEnabled() is False
+    inspector.output_kind.setCurrentIndex(
+        inspector.output_kind.findData("png")
+    )
+    assert inspector.transparent_background.isEnabled() is True
 
 
 def test_viewer_inspector_exposes_fly_navigation_and_camera_bookmarks(qapp):
@@ -119,6 +185,26 @@ def test_viewer_inspector_exposes_fly_navigation_and_camera_bookmarks(qapp):
     assert added == ["入口"]
     assert loaded == ["entrance"]
     assert deleted == ["entrance"]
+
+
+def test_viewer_inspector_exposes_editable_camera_position_and_target(qapp):
+    inspector = ViewerInspector()
+    emitted = []
+    inspector.camera_pose_changed.connect(emitted.append)
+    pose = CameraPose(
+        position=(1.0, 2.0, 3.0),
+        target=(0.5, 0.25, -1.0),
+        fov_degrees=57.0,
+    )
+
+    inspector.set_camera_pose(pose)
+    inspector.position_x.setValue(4.0)
+
+    assert inspector.position_y.value() == 2.0
+    assert inspector.target_z.value() == -1.0
+    assert emitted[-1].position == (4.0, 2.0, 3.0)
+    assert emitted[-1].target == (0.5, 0.25, -1.0)
+    assert emitted[-1].fov_degrees == 57.0
 
 
 def test_result_page_contains_studio_shell_and_fits_minimum_window(qapp, tmp_path):
@@ -177,6 +263,15 @@ def test_narrow_viewer_switches_between_timeline_and_inspector_without_squeezing
     page._toolbar.timeline_button.click()
     assert page._timeline.isVisible()
     assert not page._inspector.isVisible()
+    page.hide()
+
+
+def test_sphere_fallback_banner_survives_viewer_widget_activation(qapp, tmp_path):
+    page = ResultViewerPage(str(tmp_path / "results"), str(tmp_path / "viewer"))
+    page.set_sphere_modes_available(False, "shader unavailable")
+    page.set_viewer_widget(QLabel(), "scene.ply", 1)
+
+    assert "外接球显示不可用" in page._banner._text.text()
     page.hide()
 
 

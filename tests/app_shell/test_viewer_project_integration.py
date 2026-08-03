@@ -321,3 +321,71 @@ def test_bindings_persist_fly_navigation_and_recall_camera_bookmarks(
     assert adapter.poses[-1] == adapter.pose
     assert binding._session.project.bookmarks == ()
     window.deleteLater()
+
+
+def test_bindings_surface_sphere_shader_fallback_without_hiding_standard_view(
+    qapp, tmp_path, monkeypatch
+):
+    binding, window = _binding(tmp_path, qapp, monkeypatch)
+
+    binding._on_sphere_availability_changed(False, "shader unavailable")
+
+    combo = window.result_page._toolbar.display_mode_combo
+    sphere_index = combo.findData(DisplayMode.SPHERE_SOLID.value)
+    assert combo.model().item(sphere_index).isEnabled() is False
+    assert window.result_page._inspector.sphere_sigma_multiplier.isEnabled() is False
+    assert "外接球显示不可用" in window.result_page._banner._text.text()
+    assert "标准 Gaussian" in window.result_page._banner._text.text()
+    window.deleteLater()
+
+
+def test_bindings_apply_editable_camera_position_and_target(
+    qapp, tmp_path, monkeypatch
+):
+    binding, window = _binding(tmp_path, qapp, monkeypatch)
+
+    class FakeAdapter:
+        def __init__(self):
+            self.poses = []
+
+        def set_camera_pose(self, pose):
+            self.poses.append(pose)
+
+    from camera_system_app.domain.viewer import CameraPose
+
+    adapter = FakeAdapter()
+    binding._adapter = adapter
+    binding._session = ViewerSession(adapter, ViewerProject())
+    pose = CameraPose(
+        position=(4.0, 5.0, 6.0),
+        target=(1.0, 2.0, 3.0),
+        fov_degrees=61.0,
+    )
+
+    binding._on_camera_pose_changed(pose)
+
+    assert binding._session.project.camera == pose
+    assert adapter.poses[-1] == pose
+    assert binding._session.is_dirty
+    window.deleteLater()
+
+
+def test_display_background_color_is_used_by_final_render_settings(
+    qapp, tmp_path, monkeypatch
+):
+    binding, window = _binding(tmp_path, qapp, monkeypatch)
+
+    class FakeAdapter:
+        def set_display_settings(self, _settings):
+            pass
+
+    adapter = FakeAdapter()
+    binding._adapter = adapter
+    binding._session = ViewerSession(adapter, ViewerProject())
+    settings = DisplaySettings(background_color=(0.2, 0.4, 0.6))
+
+    binding.set_display_settings(settings)
+
+    assert binding._session.project.display.background_color == (0.2, 0.4, 0.6)
+    assert binding._session.project.render.background_color == (0.2, 0.4, 0.6)
+    window.deleteLater()

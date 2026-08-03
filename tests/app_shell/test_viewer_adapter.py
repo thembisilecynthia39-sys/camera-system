@@ -60,6 +60,20 @@ def test_adapter_applies_roaming_mode_and_fly_speed_to_embedded_widget(qapp):
     adapter.release()
 
 
+def test_adapter_publishes_sphere_shader_availability(qapp):
+    adapter = Q3DViewerAdapter(PROJECT_ROOT)
+    events = []
+    adapter.sphere_availability_changed.connect(
+        lambda available, error: events.append((available, error))
+    )
+
+    callback = adapter.item.render_controller._sphere_availability_callback
+    callback(False, "shader unavailable")
+
+    assert events == [(False, "shader unavailable")]
+    adapter.release()
+
+
 def test_adapter_applies_appearance_state_to_interactive_and_final_boundaries(qapp):
     adapter = Q3DViewerAdapter(PROJECT_ROOT)
     settings = AppearanceSettings(exposure=1.0)

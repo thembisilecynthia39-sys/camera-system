@@ -21,12 +21,26 @@ class GaussianRenderController:
         self.appearance_settings = None
         self.sphere_available = True
         self.sphere_error = ""
+        self._sphere_initialized = False
+        self._sphere_availability_callback = None
+
+    def set_sphere_availability_callback(self, callback):
+        self._sphere_availability_callback = callback
+        if self._sphere_initialized and callable(callback):
+            callback(self.sphere_available, self.sphere_error)
+
+    def _notify_sphere_availability(self):
+        callback = self._sphere_availability_callback
+        if callable(callback):
+            callback(self.sphere_available, self.sphere_error)
 
     def initialize_gl(self, shader_dir):
         try:
             self.sphere_pass.initialize_gl(shader_dir)
             self.sphere_available = True
             self.sphere_error = ""
+            self._sphere_initialized = True
+            self._notify_sphere_availability()
         except Exception as exc:
             # The standard Gaussian shader is initialized by GaussianItem
             # before this controller. A sphere shader/compiler mismatch must
@@ -34,10 +48,13 @@ class GaussianRenderController:
             # entire result viewer.
             self.sphere_available = False
             self.sphere_error = str(exc)
+            self.mode = "standard"
+            self._sphere_initialized = True
             try:
                 self.sphere_pass.release_gl()
             except Exception:
                 pass
+            self._notify_sphere_availability()
 
     def resize_gl(self, width, height):
         self.sphere_pass.resize_gl(width, height)

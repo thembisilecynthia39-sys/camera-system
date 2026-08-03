@@ -30,6 +30,26 @@ def test_display_settings_default_to_a_readable_sphere_overlay_contract():
     assert settings.sphere_style is SphereStyle.WIREFRAME
     assert settings.sphere_sigma_multiplier == pytest.approx(3.0)
     assert settings.sphere_opacity == pytest.approx(0.5)
+    assert settings.sphere_all_instances is False
+
+
+def test_display_settings_can_request_all_spheres_during_interaction():
+    settings = DisplaySettings(sphere_all_instances=True)
+
+    assert DisplaySettings.from_dict(settings.to_dict()) == settings
+
+
+def test_camera_timeline_rejects_duplicate_shot_ids():
+    pose = CameraPose()
+    shot = CameraShot("duplicate", "镜头", pose, pose)
+
+    with pytest.raises(ViewerValidationError, match="shot_id"):
+        CameraTimeline(shots=(shot, shot))
+
+
+def test_appearance_rejects_unknown_tone_mapping():
+    with pytest.raises(ViewerValidationError, match="tone mapping"):
+        AppearanceSettings(tone_mapping="filmic-unknown")
 
 
 def test_enum_values_are_stable_for_project_serialization():

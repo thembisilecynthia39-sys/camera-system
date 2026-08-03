@@ -150,5 +150,26 @@ class ViewerToolbar(QWidget):
     def set_project_dirty(self, dirty):
         self.save_button.setText("保存*" if dirty else "保存")
 
+    def set_sphere_modes_available(self, available, error=""):
+        available = bool(available)
+        combo = self.display_mode_combo
+        for value in (
+            DisplayMode.SPHERE_WIREFRAME.value,
+            DisplayMode.SPHERE_SOLID.value,
+            DisplayMode.OVERLAY.value,
+        ):
+            index = combo.findData(value)
+            if index >= 0:
+                combo.model().item(index).setEnabled(available)
+        if not available and combo.currentData() != DisplayMode.STANDARD.value:
+            blocker = QSignalBlocker(combo)
+            combo.setCurrentIndex(combo.findData(DisplayMode.STANDARD.value))
+            del blocker
+        combo.setToolTip(
+            "外接球显示不可用：{}".format(error)
+            if not available and error
+            else "Gaussian 显示模式"
+        )
+
 
 __all__ = ["ViewerToolbar"]

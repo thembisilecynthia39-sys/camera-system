@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 from PySide6.QtCore import QSignalBlocker, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -78,6 +80,7 @@ class ViewerInspector(QWidget):
     appearance_settings_changed = Signal(object)
     render_settings_changed = Signal(object)
     fov_changed = Signal(float)
+    camera_pose_changed = Signal(object)
     camera_mode_changed = Signal(str)
     fly_speed_changed = Signal(float)
     bookmark_add_requested = Signal(str)
@@ -120,20 +123,43 @@ class ViewerInspector(QWidget):
         self.sphere_sigma_multiplier = self._double(0.01, 20.0, 3.0, 0.1)
         self.sphere_opacity = self._double(0.0, 1.0, 0.5, 0.05)
         self.sphere_line_width = self._double(0.1, 8.0, 1.0, 0.1)
+        self.sphere_all_instances = QCheckBox("交互时显示全部外接球")
+        self.sphere_all_instances.setAccessibleName("交互时显示全部外接球")
         self.sphere_color_mode = QComboBox()
         self.sphere_color_mode.addItem("Gaussian 颜色", "gaussian")
         self.sphere_color_mode.addItem("统一颜色", "uniform")
+        self._background_color = DisplaySettings().background_color
+        self.background_color_edit = QLineEdit(
+            self._color_to_hex(self._background_color)
+        )
+        self.background_color_edit.setPlaceholderText("#RRGGBB")
+        self.background_color_edit.setAccessibleName("查看器背景颜色")
         view_form.addRow("显示模式", self.display_mode_combo)
         view_form.addRow("质量预设", self.quality_combo)
         view_form.addRow("外接球 σ 倍数", self.sphere_sigma_multiplier)
         view_form.addRow("球体透明度", self.sphere_opacity)
         view_form.addRow("线框宽度", self.sphere_line_width)
+        view_form.addRow("交互显示", self.sphere_all_instances)
         view_form.addRow("球体颜色", self.sphere_color_mode)
+        view_form.addRow("背景颜色", self.background_color_edit)
 
         camera_content = QWidget()
         camera_form = QFormLayout(camera_content)
         camera_form.setContentsMargins(4, 4, 4, 4)
+        self._camera_pose = CameraPose()
         self.fov = self._double(1.0, 179.0, 45.0, 1.0)
+        self.position_x = self._coordinate()
+        self.position_y = self._coordinate()
+        self.position_z = self._coordinate()
+        self.target_x = self._coordinate()
+        self.target_y = self._coordinate()
+        self.target_z = self._coordinate()
+        position_row = self._coordinate_row(
+            self.position_x, self.position_y, self.position_z
+        )
+        target_row = self._coordinate_row(
+            self.target_x, self.target_y, self.target_z
+        )
         self.camera_mode_combo = QComboBox()
         self.camera_mode_combo.addItem("轨道 Orbit", CameraMode.ORBIT.value)
         self.camera_mode_combo.addItem("飞行 Fly", CameraMode.FLY.value)
@@ -152,6 +178,8 @@ class ViewerInspector(QWidget):
         bookmark_actions.addWidget(self.bookmark_load_button)
         bookmark_actions.addWidget(self.bookmark_delete_button)
         camera_form.addRow("视场角", self.fov)
+        camera_form.addRow("相机位置 XYZ", position_row)
+        camera_form.addRow("观察目标 XYZ", target_row)
         camera_form.addRow("导航模式", self.camera_mode_combo)
         camera_form.addRow("飞行速度", self.fly_speed)
         camera_form.addRow("书签名称", self.bookmark_name_edit)
@@ -167,7 +195,12 @@ class ViewerInspector(QWidget):
         self.saturation = self._double(0.0, 4.0, 1.0, 0.05)
         self.vignette = self._double(0.0, 1.0, 0.0, 0.05)
         self.sharpening = self._double(0.0, 1.0, 0.0, 0.05)
+        self.tone_mapping_combo = QComboBox()
+        self.tone_mapping_combo.addItem("ACES", "aces")
+        self.tone_mapping_combo.addItem("Reinhard", "reinhard")
+        self.tone_mapping_combo.addItem("关闭", "none")
         appearance_form.addRow("曝光", self.exposure)
+        appearance_form.addRow("色调映射", self.tone_mapping_combo)
         appearance_form.addRow("对比度", self.contrast)
         appearance_form.addRow("饱和度", self.saturation)
         appearance_form.addRow("暗角", self.vignette)
@@ -214,9 +247,25 @@ class ViewerInspector(QWidget):
         ):
             signal = control.currentIndexChanged if isinstance(control, QComboBox) else control.valueChanged
             signal.connect(self._emit_display_settings)
+        self.sphere_all_instances.toggled.connect(self._emit_display_settings)
+        self.background_color_edit.editingFinished.connect(
+            self._background_color_edited
+        )
         for control in (self.exposure, self.contrast, self.saturation, self.vignette, self.sharpening):
             control.valueChanged.connect(self._emit_appearance_settings)
-        self.fov.valueChanged.connect(lambda value: self.fov_changed.emit(float(value)))
+        self.tone_mapping_combo.currentIndexChanged.connect(
+            self._emit_appearance_settings
+        )
+        self.fov.valueChanged.connect(self._fov_value_changed)
+        for control in (
+            self.position_x,
+            self.position_y,
+            self.position_z,
+            self.target_x,
+            self.target_y,
+            self.target_z,
+        ):
+            control.valueChanged.connect(self._emit_camera_pose)
         self.camera_mode_combo.currentIndexChanged.connect(
             lambda _index: self.camera_mode_changed.emit(self.camera_mode_combo.currentData())
         )
@@ -244,6 +293,8 @@ class ViewerInspector(QWidget):
                 else control.toggled
             )
             signal.connect(self._emit_render_settings)
+        self.output_kind.currentIndexChanged.connect(self._update_transparency_state)
+        self._update_transparency_state()
 
     @staticmethod
     def _double(minimum, maximum, value, step):
@@ -252,6 +303,48 @@ class ViewerInspector(QWidget):
         box.setSingleStep(step)
         box.setValue(value)
         return box
+
+    @staticmethod
+    def _coordinate():
+        box = SafeDoubleSpinBox()
+        box.setRange(-1000000.0, 1000000.0)
+        box.setDecimals(3)
+        box.setSingleStep(0.1)
+        return box
+
+    @staticmethod
+    def _coordinate_row(*controls):
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(3)
+        for control in controls:
+            row.addWidget(control)
+        return row
+
+    @staticmethod
+    def _color_to_hex(color):
+        return "#{:02x}{:02x}{:02x}".format(
+            *(max(0, min(255, int(round(component * 255.0)))) for component in color)
+        )
+
+    @staticmethod
+    def _parse_color(text):
+        value = str(text).strip().lstrip("#")
+        if len(value) != 6:
+            return None
+        try:
+            return tuple(int(value[index : index + 2], 16) / 255.0 for index in (0, 2, 4))
+        except ValueError:
+            return None
+
+    def _background_color_edited(self):
+        parsed = self._parse_color(self.background_color_edit.text())
+        if parsed is None:
+            self.background_color_edit.setToolTip("请输入 #RRGGBB 格式的颜色")
+            return
+        self._background_color = parsed
+        self.background_color_edit.setToolTip("查看器背景颜色")
+        self._emit_display_settings()
 
     def _emit_display_settings(self, *_args):
         self.display_settings_changed.emit(self.display_settings())
@@ -262,12 +355,44 @@ class ViewerInspector(QWidget):
     def _emit_render_settings(self, *_args):
         self.render_settings_changed.emit(self.render_settings())
 
+    def _fov_value_changed(self, value):
+        self._camera_pose = replace(self._camera_pose, fov_degrees=float(value))
+        self.fov_changed.emit(float(value))
+
+    def _emit_camera_pose(self, *_args):
+        self._camera_pose = CameraPose(
+            position=(
+                self.position_x.value(),
+                self.position_y.value(),
+                self.position_z.value(),
+            ),
+            target=(
+                self.target_x.value(),
+                self.target_y.value(),
+                self.target_z.value(),
+            ),
+            rotation_xyzw=self._camera_pose.rotation_xyzw,
+            fov_degrees=self.fov.value(),
+        )
+        self.camera_pose_changed.emit(self._camera_pose)
+
     def _update_bookmark_actions(self, *_args):
         has_name = bool(self.bookmark_name_edit.text().strip())
         has_selection = self.bookmark_combo.currentIndex() >= 0
         self.bookmark_add_button.setEnabled(has_name)
         self.bookmark_load_button.setEnabled(has_selection)
         self.bookmark_delete_button.setEnabled(has_selection)
+
+    def _update_transparency_state(self, *_args):
+        png_output = self.output_kind.currentData() in (
+            OutputKind.PNG.value,
+            OutputKind.PNG_SEQUENCE.value,
+        )
+        if not png_output and self.transparent_background.isChecked():
+            blocker = QSignalBlocker(self.transparent_background)
+            self.transparent_background.setChecked(False)
+            del blocker
+        self.transparent_background.setEnabled(png_output)
 
     def display_settings(self):
         return DisplaySettings(
@@ -277,11 +402,14 @@ class ViewerInspector(QWidget):
             sphere_opacity=self.sphere_opacity.value(),
             sphere_line_width=self.sphere_line_width.value(),
             sphere_color_mode=self.sphere_color_mode.currentData(),
+            sphere_all_instances=self.sphere_all_instances.isChecked(),
+            background_color=self._background_color,
         )
 
     def appearance_settings(self):
         return AppearanceSettings(
             exposure=self.exposure.value(),
+            tone_mapping=self.tone_mapping_combo.currentData(),
             contrast=self.contrast.value(),
             saturation=self.saturation.value(),
             vignette=self.vignette.value(),
@@ -289,12 +417,16 @@ class ViewerInspector(QWidget):
         )
 
     def render_settings(self):
+        output_kind = self.output_kind.currentData()
         return RenderSettings(
             width=self.render_width.value(),
             height=self.render_height.value(),
             fps=self.render_fps.value(),
-            output_kind=self.output_kind.currentData(),
-            transparent_background=self.transparent_background.isChecked(),
+            output_kind=output_kind,
+            transparent_background=(
+                self.transparent_background.isChecked()
+                and output_kind in (OutputKind.PNG.value, OutputKind.PNG_SEQUENCE.value)
+            ),
         )
 
     def set_display_settings(self, settings):
@@ -306,7 +438,9 @@ class ViewerInspector(QWidget):
             self.sphere_sigma_multiplier,
             self.sphere_opacity,
             self.sphere_line_width,
+            self.sphere_all_instances,
             self.sphere_color_mode,
+            self.background_color_edit,
         )
         blockers = [QSignalBlocker(control) for control in controls]
         self.display_mode_combo.setCurrentIndex(self.display_mode_combo.findData(settings.mode.value))
@@ -314,15 +448,28 @@ class ViewerInspector(QWidget):
         self.sphere_sigma_multiplier.setValue(settings.sphere_sigma_multiplier)
         self.sphere_opacity.setValue(settings.sphere_opacity)
         self.sphere_line_width.setValue(settings.sphere_line_width)
+        self.sphere_all_instances.setChecked(settings.sphere_all_instances)
         self.sphere_color_mode.setCurrentIndex(self.sphere_color_mode.findData(settings.sphere_color_mode))
+        self._background_color = settings.background_color
+        self.background_color_edit.setText(self._color_to_hex(settings.background_color))
         del blockers
 
     def set_appearance_settings(self, settings):
         if not isinstance(settings, AppearanceSettings):
             raise ValueError("appearance settings must be an AppearanceSettings value")
-        controls = (self.exposure, self.contrast, self.saturation, self.vignette, self.sharpening)
+        controls = (
+            self.exposure,
+            self.tone_mapping_combo,
+            self.contrast,
+            self.saturation,
+            self.vignette,
+            self.sharpening,
+        )
         blockers = [QSignalBlocker(control) for control in controls]
         self.exposure.setValue(settings.exposure)
+        self.tone_mapping_combo.setCurrentIndex(
+            self.tone_mapping_combo.findData(settings.tone_mapping)
+        )
         self.contrast.setValue(settings.contrast)
         self.saturation.setValue(settings.saturation)
         self.vignette.setValue(settings.vignette)
@@ -340,13 +487,30 @@ class ViewerInspector(QWidget):
         self.output_kind.setCurrentIndex(self.output_kind.findData(settings.output_kind.value))
         self.transparent_background.setChecked(settings.transparent_background)
         del blockers
+        self._update_transparency_state()
 
     def set_camera_pose(self, pose):
         if not isinstance(pose, CameraPose):
             raise ValueError("camera pose must be a CameraPose value")
-        blocker = QSignalBlocker(self.fov)
+        self._camera_pose = pose
+        controls = (
+            self.fov,
+            self.position_x,
+            self.position_y,
+            self.position_z,
+            self.target_x,
+            self.target_y,
+            self.target_z,
+        )
+        blockers = [QSignalBlocker(control) for control in controls]
         self.fov.setValue(pose.fov_degrees)
-        del blocker
+        self.position_x.setValue(pose.position[0])
+        self.position_y.setValue(pose.position[1])
+        self.position_z.setValue(pose.position[2])
+        self.target_x.setValue(pose.target[0])
+        self.target_y.setValue(pose.target[1])
+        self.target_z.setValue(pose.target[2])
+        del blockers
 
     def set_camera_mode(self, mode):
         mode = mode if isinstance(mode, CameraMode) else CameraMode(mode)
@@ -371,6 +535,37 @@ class ViewerInspector(QWidget):
             self.bookmark_combo.addItem(bookmark.name, bookmark.bookmark_id)
         del blocker
         self._update_bookmark_actions()
+
+    def set_sphere_modes_available(self, available, error=""):
+        available = bool(available)
+        for value in (
+            DisplayMode.SPHERE_WIREFRAME.value,
+            DisplayMode.SPHERE_SOLID.value,
+            DisplayMode.OVERLAY.value,
+        ):
+            index = self.display_mode_combo.findData(value)
+            if index >= 0:
+                self.display_mode_combo.model().item(index).setEnabled(available)
+        controls = (
+            self.sphere_sigma_multiplier,
+            self.sphere_opacity,
+            self.sphere_line_width,
+            self.sphere_all_instances,
+            self.sphere_color_mode,
+        )
+        for control in controls:
+            control.setEnabled(available)
+        if not available and self.display_mode_combo.currentData() != DisplayMode.STANDARD.value:
+            blocker = QSignalBlocker(self.display_mode_combo)
+            self.display_mode_combo.setCurrentIndex(
+                self.display_mode_combo.findData(DisplayMode.STANDARD.value)
+            )
+            del blocker
+        self.display_mode_combo.setToolTip(
+            "外接球显示不可用：{}".format(error)
+            if not available and error
+            else "Gaussian 显示模式"
+        )
 
 
 __all__ = ["CollapsibleSection", "ViewerInspector"]

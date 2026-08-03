@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from camera_system_app.application.viewer_timeline import (
@@ -56,6 +56,15 @@ class RenderPlan:
             raise RenderPlanError(str(exc)) from exc
         if self.render.output_kind in (OutputKind.MP4, OutputKind.PNG_SEQUENCE) and not self.timeline.shots:
             raise RenderPlanError("视频或 PNG 序列输出需要至少一个相机镜头段")
+        if self.timeline.shots and self.timeline.fps != self.render.fps:
+            # Timeline FPS is the editing/preview rate. A final output must
+            # sample the same deterministic tour at the requested encoder
+            # rate, otherwise duration and frame cadence silently diverge.
+            object.__setattr__(
+                self,
+                "timeline",
+                replace(self.timeline, fps=self.render.fps),
+            )
         object.__setattr__(self, "output_path", Path(self.output_path).expanduser())
 
     @classmethod

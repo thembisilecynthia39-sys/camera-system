@@ -86,6 +86,7 @@ class ViewerBindings(QObject):
         window.result_page.camera_mode_changed.connect(self._on_camera_mode_changed)
         window.result_page.fly_speed_changed.connect(self._on_fly_speed_changed)
         window.result_page.fov_changed.connect(self._on_fov_changed)
+        window.result_page.camera_pose_changed.connect(self._on_camera_pose_changed)
         window.result_page.bookmark_add_requested.connect(
             self._on_bookmark_add_requested
         )
@@ -212,6 +213,13 @@ class ViewerBindings(QObject):
         if self._session is None:
             return
         self._session.set_display_settings(settings)
+        if settings.background_color != self._session.project.render.background_color:
+            self._session.set_render_settings(
+                replace(
+                    self._session.project.render,
+                    background_color=settings.background_color,
+                )
+            )
         self._mark_project_dirty()
 
     def set_appearance_settings(self, settings) -> None:
@@ -257,6 +265,17 @@ class ViewerBindings(QObject):
             self.window.statusBar().showMessage("● 视场角无效：{}".format(exc))
             return
         self.window.result_page.set_current_camera_pose(self._session.project.camera)
+        self._mark_project_dirty()
+
+    def _on_camera_pose_changed(self, pose) -> None:
+        if self._session is None:
+            return
+        try:
+            self._session.set_camera_pose(pose)
+        except (TypeError, ValueError) as exc:
+            self.window.statusBar().showMessage("● 相机位置或目标无效：{}".format(exc))
+            return
+        self.window.result_page.set_current_camera_pose(pose)
         self._mark_project_dirty()
 
     def _next_bookmark_id(self) -> str:
@@ -372,7 +391,16 @@ class ViewerBindings(QObject):
             self.window.statusBar().showMessage("● 无法开始导出：{}".format(exc))
             return None
         controller = self._ensure_render_controller()
-        self._render_dialog = ViewerRenderDialog(plan, self.window)
+        metrics = {}
+        try:
+            metrics = self._session.performance_metrics()
+        except Exception as exc:
+            self._logger.debug("Viewer metrics unavailable before render: %s", exc)
+        self._render_dialog = ViewerRenderDialog(
+            plan,
+            metrics=metrics,
+            parent=self.window,
+        )
         self._render_dialog.cancel_requested.connect(controller.cancel)
         self._render_dialog.show()
         self.window.result_page.set_rendering(True)
@@ -620,6 +648,9 @@ class ViewerBindings(QObject):
             if self._adapter is None:
                 self._adapter = Q3DViewerAdapter(self.project_root, self)
                 self._adapter.rendering_failed.connect(self._on_failed)
+                self._adapter.sphere_availability_changed.connect(
+                    self._on_sphere_availability_changed
+                )
                 self._adapter.widget.interaction_finished.connect(
                     self._sync_camera_from_adapter
                 )
@@ -669,6 +700,23 @@ class ViewerBindings(QObject):
         self._logger.error("q3dviewer load/render failed: %s", message)
         self.window.result_page.show_load_error(message)
         self.window.statusBar().showMessage("● 结果加载失败：{}".format(message))
+
+    def _on_sphere_availability_changed(self, available: bool, error: str) -> None:
+        self.window.result_page.set_sphere_modes_available(available, error)
+        if not available:
+            if self._session is not None and self._session.project.display.mode is not DisplayMode.STANDARD:
+                self._session.set_display_settings(
+                    replace(
+                        self._session.project.display,
+                        mode=DisplayMode.STANDARD,
+                    )
+                )
+                self._mark_project_dirty()
+            self.window.statusBar().showMessage(
+                "● 外接球渲染不可用，已回退标准 Gaussian：{}".format(
+                    error or "未知 shader 错误"
+                )
+            )
 
     def _on_finished(self, worker) -> None:
         if self._worker is worker:

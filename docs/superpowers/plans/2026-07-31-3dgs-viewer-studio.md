@@ -9,10 +9,12 @@
 **Delivery status (2026-08-03):** Core Viewer Studio delivery is implemented and
 verified. This includes Orbit/Fly roaming, FOV/fly speed, named camera bookmarks,
 frame-based Camera Director editing/playback, standard/sphere/overlay rendering,
-interactive and final appearance controls, sidecar save/restore, bounded PNG/MP4
-output, cancellation, narrow-window panel switching, and the opt-in Jetson GL
-smoke test. The unchecked task lists below are retained as the original execution
-record; release evidence is summarized in the user guide and README.
+interactive and final appearance controls, editable camera pose/background,
+all-instance sphere inspection, sidecar save/restore, bounded PNG/MP4 output,
+cancellation, export resource summary, narrow-window panel switching, and the
+opt-in Jetson GL smoke test. The unchecked task lists below are retained as the
+original execution record; release evidence is summarized in the user guide and
+README.
 
 **Tech Stack:** Existing Python project conventions, Python 3.8-compatible syntax, PySide6 compatibility APIs, Qt Widgets, Fusion/QSS, NumPy, OpenGL 4.3 core profile, pytest, PyAV 12.3.0, and the existing Jetson GStreamer/H.264 path.
 
