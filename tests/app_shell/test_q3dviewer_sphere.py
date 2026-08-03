@@ -83,3 +83,57 @@ def test_gaussian_item_uses_the_shared_gpu_data_owner_for_existing_set_data_api(
 
     assert item.gpu_data.count == 2
     assert item.gs_data is item.gpu_data.gs_data
+
+
+def test_render_controller_switches_display_modes_without_reloading_source_data():
+    prepare_q3dviewer(PROJECT_ROOT)
+    from q3dviewer.custom_items.gaussian_item import GaussianItem
+
+    item = GaussianItem(sort_enabled=False, sort_backend="opengl")
+    raw = np.zeros((2, 14), dtype=np.float32)
+    item.set_data(gs_data=raw, validated=True)
+    source_buffer = item.gpu_data.gs_data
+
+    item.set_display_mode("sphere_wireframe")
+    assert item.render_controller.mode == "sphere_wireframe"
+    item.set_display_mode("sphere_solid")
+    assert item.render_controller.mode == "sphere_solid"
+    item.set_display_mode("overlay")
+    assert item.render_controller.mode == "overlay"
+    item.set_display_mode("standard")
+
+    assert item.gpu_data.gs_data is source_buffer
+    assert item.gpu_data.need_update
+
+
+def test_render_controller_exposes_confirmed_sphere_defaults_and_settings():
+    prepare_q3dviewer(PROJECT_ROOT)
+    from q3dviewer.custom_items.gaussian_item import GaussianItem
+
+    item = GaussianItem(sort_enabled=False, sort_backend="opengl")
+
+    settings = item.set_sphere_settings(
+        sigma_multiplier=4.0,
+        opacity=0.35,
+        line_width=2.0,
+        color=(0.1, 0.2, 0.3),
+    )
+
+    assert settings["sigma_multiplier"] == pytest.approx(4.0)
+    assert settings["opacity"] == pytest.approx(0.35)
+    assert settings["line_width"] == pytest.approx(2.0)
+    assert settings["color"] == pytest.approx((0.1, 0.2, 0.3))
+
+
+def test_sphere_shaders_declare_shared_data_and_ray_intersection_contract():
+    shader_dir = PROJECT_ROOT / "3DGSviewer" / "q3dviewer" / "q3dviewer" / "shaders"
+    vertex = (shader_dir / "gau_sphere_vert.glsl").read_text(encoding="utf-8")
+    fragment = (shader_dir / "gau_sphere_frag.glsl").read_text(encoding="utf-8")
+
+    assert "binding = 0" in vertex
+    assert "sphere_sigma_multiplier" in vertex
+    assert "GaussianData" in vertex
+    assert "ray" in fragment
+    assert "sphere_center" in fragment
+    assert "discard" in fragment
+    assert "render_style" in fragment

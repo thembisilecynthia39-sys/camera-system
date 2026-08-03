@@ -18,6 +18,7 @@ from OpenGL.raw.GL.VERSION.GL_4_2 import glMemoryBarrier as raw_glMemoryBarrier
 from OpenGL.raw.GL.VERSION.GL_4_3 import glDispatchCompute as raw_glDispatchCompute
 from q3dviewer.utils import set_uniform
 from q3dviewer.custom_items.gaussian_gpu_data import GaussianGpuData
+from q3dviewer.custom_items.gaussian_render_controller import GaussianRenderController
 
 
 def div_round_up(x, y):
@@ -31,6 +32,7 @@ class GaussianItem(BaseItem):
                  **kwds):
         super().__init__()
         self.gpu_data = GaussianGpuData(interactive_max_gaussians=120000)
+        self.render_controller = GaussianRenderController(self)
         self.need_updateGS = False
         self.prev_Rz = np.array([np.inf, np.inf, np.inf], dtype=np.float32)
         self.path = os.path.dirname(__file__)
@@ -191,6 +193,7 @@ class GaussianItem(BaseItem):
 
         # SSBO storage is shared by the splat and sphere render passes.
         self.gpu_data.initialize_gl()
+        self.render_controller.initialize_gl(self.path + '/../shaders')
         if self.sort_backend == 'opengl':
             try:
                 self._sort_query = glGenQueries(1)
@@ -226,6 +229,7 @@ class GaussianItem(BaseItem):
 
     def resize_gl(self, width, height):
         self._update_viewport_uniforms(width, height)
+        self.render_controller.resize_gl(width, height)
 
     def updateGS(self):
         if (self.need_updateGS):
@@ -250,6 +254,9 @@ class GaussianItem(BaseItem):
         return False
 
     def paint(self):
+        return self.render_controller.paint()
+
+    def paint_standard(self):
         # get current view matrix
         self.view_matrix = self.glwidget().view_matrix
 
@@ -463,6 +470,15 @@ class GaussianItem(BaseItem):
             self.request_sort()
             self.cuda_pw = None
 
+    def set_display_mode(self, mode):
+        return self.render_controller.set_mode(mode)
+
+    def set_quality(self, quality):
+        return self.render_controller.set_quality(quality)
+
+    def set_sphere_settings(self, **changes):
+        return self.render_controller.set_sphere_settings(**changes)
+
     def performance_metrics(self):
         """Non-blocking renderer counters for diagnostics/telemetry."""
         return {
@@ -502,6 +518,7 @@ class GaussianItem(BaseItem):
             if program:
                 glDeleteProgram(int(program))
                 setattr(self, name, None)
+        self.render_controller.release_gl()
         self.gpu_data.release_gl()
         self.cuda_pw = None
         super().release_gl()
