@@ -1,6 +1,6 @@
 # Camera System：Jetson 多摄像头 3DGS 工作站
 
-最后更新：2026-07-29
+最后更新：2026-07-31
 
 Camera System 是运行在 Jetson 上的统一 Qt 桌面应用，串联多摄像头采集、
 八视角任务打包、WSL/服务器端 3DGS 重建和 PLY 结果查看。仓库也保留三个
@@ -145,6 +145,24 @@ wsl_service_url: http://192.168.1.100:8000
 
 没有摄像头或 WSL 服务离线时，应用界面仍能启动；相关页面会显示可操作的
 诊断信息。
+
+### 结果查看与高质量漫游
+
+结果页现在包含一个本地 3DGS Viewer Studio：标准 Gaussian、外接球线框、外接球
+实体和叠加四种显示模式共享同一份 GPU Gaussian 数据，切换时不重新加载 PLY。
+外接球半径是 `3.0 × max(scale.x, scale.y, scale.z)`，其中 3.0 是可调的默认
+sigma 倍数；该显示不会修改原始椭圆或 PLY。
+
+使用 Camera Director 创建漫游时，先移动到视角并点击“添加镜头”，再移动到下一
+视角并再次添加；时间轴会自动连接前后视角。播放预览和最终渲染都按固定 FPS 使用
+同一套确定性插值。导出支持 PNG 静帧、PNG 序列和 MP4；透明背景仅用于 PNG，MP4
+优先走 Jetson GStreamer H.264，必要时回退到 PyAV。导出队列有界且不丢帧，取消或
+编码失败不会发布不完整文件。
+
+查看器项目默认保存为 PLY 旁边的 `scene.splatview.json`，包含相机、时间轴、显示、
+外观和渲染设置。加载时会校验 PLY 文件大小和 SHA-256；源文件发生变化时必须明确
+选择是否加载旧设置。更完整的操作步骤见
+[Jetson 用户指南中的 Viewer Studio 章节](docs/user/JETSON_USER_GUIDE.md#五-3dgs-viewer-studio漫游外接球和展示输出)。
 
 ## 取消、超时与安全退出
 
