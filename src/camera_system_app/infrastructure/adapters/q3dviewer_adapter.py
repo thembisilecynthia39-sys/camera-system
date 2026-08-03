@@ -11,6 +11,12 @@ from typing import Any, Callable
 import numpy as np
 from PySide6.QtCore import QObject, QTimer, Signal
 
+from camera_system_app.domain.viewer import (
+    AppearanceSettings,
+    CameraPose,
+    DisplaySettings,
+)
+
 
 class ViewerLoadError(Exception):
     """A local result cannot be loaded as a Gaussian Splat PLY."""
@@ -106,6 +112,7 @@ class Q3DViewerAdapter(QObject):
         self._default_center = np.zeros(3, dtype=np.float64)
         self._default_distance = 4.0
         self._default_euler = np.array([pi / 3, 0.0, pi / 4], dtype=np.float64)
+        self._appearance_settings = AppearanceSettings()
         self._timer = QTimer(self)
         self._timer.setInterval(33)
         self._timer.timeout.connect(self.widget.update)
@@ -164,6 +171,112 @@ class Q3DViewerAdapter(QObject):
         )
         self.item.request_sort()
         self.widget.update()
+
+    def fit_scene(self) -> None:
+        self.reset_view()
+
+    def set_display_settings(self, settings: DisplaySettings) -> None:
+        if not isinstance(settings, DisplaySettings):
+            raise ValueError("display settings must be a DisplaySettings value")
+        self.item.set_display_mode(settings.mode.value)
+        self.item.set_quality(settings.quality.value)
+        self.item.set_sphere_settings(
+            sigma_multiplier=settings.sphere_sigma_multiplier,
+            opacity=settings.sphere_opacity,
+            line_width=settings.sphere_line_width,
+            color_mode=settings.sphere_color_mode,
+            color=settings.sphere_color,
+        )
+        self.widget.set_color(
+            np.asarray(
+                (*settings.background_color, 1.0),
+                dtype=np.float32,
+            )
+        )
+        self.widget.update()
+
+    def set_quality(self, quality: str) -> str:
+        return self.item.set_quality(quality)
+
+    @property
+    def appearance_settings(self) -> AppearanceSettings:
+        return self._appearance_settings
+
+    def set_appearance_settings(self, settings: AppearanceSettings) -> None:
+        if not isinstance(settings, AppearanceSettings):
+            raise ValueError("appearance settings must be an AppearanceSettings value")
+        self._appearance_settings = settings
+
+    def get_camera_state(self) -> dict[str, Any]:
+        return self.widget.get_camera_state()
+
+    def set_camera_state(self, state: dict[str, Any]) -> None:
+        self.widget.set_camera_state(state)
+
+    def get_camera_pose(self) -> CameraPose:
+        from q3dviewer.utils.maths import euler_to_matrix, matrix_to_quaternion
+
+        state = self.widget.get_camera_state()
+        center = np.asarray(state["center"], dtype=np.float64)
+        rotation = euler_to_matrix(np.asarray(state["euler"], dtype=np.float64))
+        position = center + rotation.dot(np.array([0.0, 0.0, state["distance"]]))
+        return CameraPose(
+            position=position,
+            target=center,
+            rotation_xyzw=matrix_to_quaternion(rotation),
+            fov_degrees=state["fov_degrees"],
+        )
+
+    def set_camera_pose(self, pose: CameraPose) -> None:
+        if not isinstance(pose, CameraPose):
+            raise ValueError("camera pose must be a CameraPose value")
+        from q3dviewer.utils.maths import matrix_to_euler, quaternion_to_matrix
+
+        position = np.asarray(pose.position, dtype=np.float64)
+        target = np.asarray(pose.target, dtype=np.float64)
+        distance = float(np.linalg.norm(position - target))
+        if distance <= 1e-8:
+            raise ValueError("camera position and target must be different")
+        rotation = quaternion_to_matrix(pose.rotation_xyzw)
+        self.widget.set_camera_state(
+            {
+                "center": target.tolist(),
+                "euler": matrix_to_euler(rotation).tolist(),
+                "distance": distance,
+                "fov_degrees": pose.fov_degrees,
+            }
+        )
+
+    def capture_frame(self, width=None, height=None, camera_pose=None):
+        if width is None and height is None and camera_pose is None:
+            return self.widget.capture_frame()
+        if width is None or height is None:
+            raise ValueError("width and height must be supplied together")
+        camera_state = None
+        if camera_pose is not None:
+            current = self.get_camera_pose() if camera_pose is None else camera_pose
+            if not isinstance(current, CameraPose):
+                raise ValueError("camera_pose must be a CameraPose value")
+            from q3dviewer.utils.maths import matrix_to_euler, quaternion_to_matrix
+
+            position = np.asarray(current.position, dtype=np.float64)
+            target = np.asarray(current.target, dtype=np.float64)
+            distance = float(np.linalg.norm(position - target))
+            if distance <= 1e-8:
+                raise ValueError("camera position and target must be different")
+            camera_state = {
+                "center": target.tolist(),
+                "euler": matrix_to_euler(
+                    quaternion_to_matrix(current.rotation_xyzw)
+                ).tolist(),
+                "distance": distance,
+                "fov_degrees": current.fov_degrees,
+            }
+        return self.widget.render_to_array(
+            width,
+            height,
+            camera_state=camera_state,
+        )
 
     def performance_metrics(self) -> dict[str, Any]:
         """Renderer timing plus Jetson unified-memory availability."""
