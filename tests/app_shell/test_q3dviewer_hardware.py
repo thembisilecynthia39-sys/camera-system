@@ -198,6 +198,16 @@ def test_jetson_core_profile_renders_gaussian_ply(qapp, tmp_path):
     pixels = pixels.reshape(converted.height(), converted.width(), 4)
     assert np.any(pixels[:, :, :3] != pixels[0, 0, :3])
     assert not errors
+
+    for mode in ("sphere_wireframe", "sphere_solid", "overlay"):
+        adapter.item.set_display_mode(mode)
+        adapter.widget.update()
+        QTest.qWait(250)
+        qapp.processEvents()
+        sphere_frame = adapter.widget.grabFramebuffer()
+        assert not sphere_frame.isNull()
+        assert sphere_frame.size() == frame.size()
+    assert not errors
     adapter.release()
     assert not adapter.item.is_initialized()
     adapter.widget.close()
