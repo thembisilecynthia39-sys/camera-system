@@ -26,6 +26,7 @@ class ViewerTimelineWidget(QWidget):
         self.setObjectName("viewerTimeline")
         self._timeline = CameraTimeline()
         self._selected_shot = -1
+        self._current_pose = CameraPose()
         self.shot_markers = []
 
         root = QVBoxLayout(self)
@@ -117,6 +118,11 @@ class ViewerTimelineWidget(QWidget):
     def set_current_frame(self, frame):
         self.frame_slider.setValue(int(frame))
 
+    def set_current_pose(self, pose):
+        if not isinstance(pose, CameraPose):
+            raise ValueError("current camera pose must be a CameraPose value")
+        self._current_pose = pose
+
     def _frame_value_changed(self, frame):
         self._update_frame_label()
         self.frame_selected.emit(int(frame))
@@ -151,10 +157,7 @@ class ViewerTimelineWidget(QWidget):
         self._update_action_state()
 
     def _add_shot(self):
-        if self._timeline.shots:
-            pose = self._timeline.shots[-1].end
-        else:
-            pose = CameraPose()
+        pose = self._current_pose
         shot_number = len(self._timeline.shots) + 1
         shot = CameraShot(
             "shot-{}".format(shot_number),
@@ -162,7 +165,11 @@ class ViewerTimelineWidget(QWidget):
             pose,
             pose,
         )
-        shots = self._timeline.shots + (shot,)
+        shots = list(self._timeline.shots)
+        if shots:
+            shots[-1] = replace(shots[-1], end=pose)
+        shots.append(shot)
+        shots = tuple(shots)
         self._replace_timeline(CameraTimeline(shots=shots, fps=self._timeline.fps, loop=self._timeline.loop))
         self._selected_shot = len(shots) - 1
         self._rebuild_markers()

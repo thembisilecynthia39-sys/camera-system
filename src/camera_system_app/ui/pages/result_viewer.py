@@ -193,6 +193,9 @@ class ResultViewerPage(BasePage):
     def set_current_frame(self, frame: int) -> None:
         self._timeline.set_current_frame(frame)
 
+    def set_current_camera_pose(self, pose) -> None:
+        self._timeline.set_current_pose(pose)
+
     def set_playing(self, playing: bool) -> None:
         self._toolbar.set_playing(playing)
 

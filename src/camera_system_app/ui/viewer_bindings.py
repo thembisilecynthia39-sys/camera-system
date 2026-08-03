@@ -328,6 +328,7 @@ class ViewerBindings(QObject):
         if self._session is not None and self._adapter is not None:
             pose = self._adapter.get_camera_pose()
             self._session.set_camera_pose(pose)
+            self.window.result_page.set_current_camera_pose(pose)
             self._mark_project_dirty()
 
     def _load_project_state(
@@ -467,6 +468,9 @@ class ViewerBindings(QObject):
             if self._adapter is None:
                 self._adapter = Q3DViewerAdapter(self.project_root, self)
                 self._adapter.rendering_failed.connect(self._on_failed)
+                self._adapter.widget.interaction_finished.connect(
+                    self._sync_camera_from_adapter
+                )
                 self._adapter.set_active(
                     self.window.stack.currentWidget() is self.window.result_page
                 )
@@ -490,6 +494,7 @@ class ViewerBindings(QObject):
             self._ensure_render_controller()
             self._playback.set_timeline(project.timeline)
             self.window.result_page.set_timeline(project.timeline)
+            self.window.result_page.set_current_camera_pose(project.camera)
             self.window.result_page._inspector.set_display_settings(project.display)
             self.window.result_page._inspector.set_appearance_settings(project.appearance)
             self.window.result_page._inspector.set_render_settings(project.render)

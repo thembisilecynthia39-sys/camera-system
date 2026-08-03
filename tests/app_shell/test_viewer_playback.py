@@ -94,3 +94,18 @@ def test_timeline_widget_is_model_backed_and_exposes_shot_actions(qapp):
     assert changed
     assert len(widget.timeline.shots) == 3
     assert any(shot.name.endswith("副本") for shot in widget.timeline.shots)
+
+
+def test_timeline_add_shot_captures_the_current_camera_pose(qapp):
+    widget = ViewerTimelineWidget()
+    first_pose = CameraPose(position=(1.0, 0.0, 5.0))
+    second_pose = CameraPose(position=(2.0, 0.0, 5.0))
+
+    widget.set_current_pose(first_pose)
+    widget.add_button.click()
+    widget.set_current_pose(second_pose)
+    widget.add_button.click()
+
+    assert widget.timeline.shots[0].start == first_pose
+    assert widget.timeline.shots[0].end == second_pose
+    assert widget.timeline.shots[1].start == second_pose
