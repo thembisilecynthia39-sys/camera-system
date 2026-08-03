@@ -103,6 +103,56 @@ def test_viewer_inspector_groups_viewer_controls_into_collapsible_sections(qapp)
     assert inspector.sphere_opacity.value() == 0.5
 
 
+def test_result_page_is_a_clean_viewer_shell_with_right_overlay(qapp, tmp_path):
+    page = ResultViewerPage(str(tmp_path / "results"), str(tmp_path / "viewer"))
+    page.resize(900, 640)
+    page.show()
+    qapp.processEvents()
+
+    assert page._page_header.isVisible() is False
+    assert page._viewer_stage is not None
+
+    viewport = QWidget()
+    viewport.setMinimumSize(480, 320)
+    page.set_viewer_widget(viewport, "scene.ply", 1)
+    qapp.processEvents()
+    before = page._viewer_stage.viewport_rect().size()
+
+    assert page._inspector.is_collapsed is True
+    page._inspector.set_collapsed(False)
+    qapp.processEvents()
+
+    assert page._inspector.width() > 44
+    assert page._viewer_stage.viewport_rect().size() == before
+    page.hide()
+
+
+def test_viewer_inspector_collapses_to_accessible_handle(qapp):
+    inspector = ViewerInspector()
+    changes = []
+    inspector.collapsed_changed.connect(changes.append)
+
+    assert inspector.is_collapsed is True
+    assert inspector.panel_width_for_host(900) == 44
+    inspector.set_collapsed(False)
+
+    assert inspector.is_collapsed is False
+    assert inspector.panel_width_for_host(900) == 320
+    assert changes == [False]
+    assert inspector.collapse_button.accessibleName()
+
+
+def test_toolbar_inspector_button_tracks_expanded_state_without_emitting(qapp):
+    toolbar = ViewerToolbar()
+    commands = []
+    toolbar.inspector_requested.connect(lambda: commands.append("toggle"))
+
+    toolbar.set_inspector_expanded(True)
+
+    assert toolbar.inspector_button.isChecked() is True
+    assert commands == []
+
+
 def test_viewer_inspector_emits_display_settings_with_sphere_defaults(qapp):
     inspector = ViewerInspector()
     emitted = []
@@ -298,7 +348,7 @@ def test_result_page_contains_studio_shell_and_fits_minimum_window(qapp, tmp_pat
 
     assert page._toolbar.isEnabled() is False
     assert page._inspector.isVisible() is False
-    assert page._studio_splitter.minimumSize().width() >= 0
+    assert page._viewer_stage.minimumSize().width() >= 0
     assert page._toolbar.minimumSizeHint().height() >= 40
     page.hide()
 
@@ -313,19 +363,20 @@ def test_result_page_toolbar_does_not_force_a_wider_than_minimum_window(qapp, tm
     page.hide()
 
 
-def test_loaded_result_hides_duplicate_source_card_to_keep_viewport_tall(qapp, tmp_path):
+def test_loaded_result_keeps_the_clean_viewer_shell(qapp, tmp_path):
     page = ResultViewerPage(str(tmp_path / "results"), str(tmp_path / "viewer"))
     page.resize(720, 600)
     page.show()
     page.set_viewer_widget(QLabel(), "scene.ply", 1)
     qapp.processEvents()
 
-    assert page._source_card.isVisible() is False
+    assert page._page_header.isVisible() is False
+    assert page._banner.isVisible() is False
     assert page.minimumSizeHint().height() <= 680
     page.hide()
 
 
-def test_narrow_viewer_switches_between_timeline_and_inspector_without_squeezing_gl(
+def test_narrow_viewer_toggles_overlay_without_squeezing_gl(
     qapp, tmp_path
 ):
     page = ResultViewerPage(str(tmp_path / "results"), str(tmp_path / "viewer"))
@@ -337,15 +388,18 @@ def test_narrow_viewer_switches_between_timeline_and_inspector_without_squeezing
     qapp.processEvents()
 
     assert page._timeline.isVisible()
-    assert not page._inspector.isVisible()
+    assert page._inspector.isVisible()
+    assert page._inspector.is_collapsed is True
+    before = page._viewer_stage.viewport_rect().size()
     assert page.minimumSizeHint().width() <= 720
 
     page._toolbar.inspector_button.click()
-    assert page._inspector.isVisible()
-    assert not page._timeline.isVisible()
+    assert page._inspector.is_collapsed is False
+    assert page._viewer_stage.viewport_rect().size() == before
     page._toolbar.timeline_button.click()
-    assert page._timeline.isVisible()
-    assert not page._inspector.isVisible()
+    assert page._timeline.isVisible() is False
+    page._toolbar.inspector_button.click()
+    assert page._inspector.is_collapsed is True
     page.hide()
 
 

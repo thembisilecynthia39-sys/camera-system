@@ -10,7 +10,9 @@ from PySide6.QtWidgets import (
     QComboBox,
     QDoubleSpinBox,
     QFormLayout,
+    QFrame,
     QHBoxLayout,
+    QLabel,
     QLineEdit,
     QPushButton,
     QScrollArea,
@@ -86,19 +88,42 @@ class ViewerInspector(QWidget):
     bookmark_add_requested = Signal(str)
     bookmark_load_requested = Signal(str)
     bookmark_delete_requested = Signal(str)
+    collapsed_changed = Signal(bool)
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("viewerInspector")
-        self.setMinimumWidth(280)
+        self._collapsed = True
+        self.setMinimumWidth(44)
         self.setMaximumWidth(360)
         root = QVBoxLayout(self)
-        root.setContentsMargins(8, 8, 8, 8)
+        root.setContentsMargins(4, 8, 4, 8)
         root.setSpacing(10)
+
+        header = QFrame()
+        header.setObjectName("viewerInspectorHeader")
+        header_layout = QHBoxLayout(header)
+        header_layout.setContentsMargins(4, 4, 4, 4)
+        header_layout.setSpacing(4)
+        self._title = QLabel("参数")
+        self._title.setObjectName("viewerInspectorTitle")
+        self.collapse_button = QToolButton()
+        self.collapse_button.setObjectName("viewerInspectorCollapseButton")
+        self.collapse_button.setToolButtonStyle(2)
+        self.collapse_button.setMinimumSize(32, 32)
+        self.collapse_button.clicked.connect(self.toggle_collapsed)
+        header_layout.addWidget(self._title, 1)
+        header_layout.addWidget(self.collapse_button)
+        root.addWidget(header)
+
         scroll = QScrollArea()
+        self.scroll = scroll
+        scroll.setObjectName("viewerInspectorScroll")
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QScrollArea.NoFrame)
         content = QWidget()
+        self.content = content
+        content.setObjectName("viewerInspectorContent")
         content_layout = QVBoxLayout(content)
         content_layout.setContentsMargins(4, 4, 4, 4)
         content_layout.setSpacing(12)
@@ -142,6 +167,7 @@ class ViewerInspector(QWidget):
         self.background_color_edit = QLineEdit(
             self._color_to_hex(self._background_color)
         )
+        self.background_color_edit.setObjectName("viewerInspectorInput")
         self.background_color_edit.setPlaceholderText("#RRGGBB")
         self.background_color_edit.setAccessibleName("查看器背景颜色")
         view_form.addRow("显示模式", self.display_mode_combo)
@@ -362,6 +388,39 @@ class ViewerInspector(QWidget):
         self.fps_preset_combo.currentIndexChanged.connect(self._fps_preset_changed)
         self.output_kind.currentIndexChanged.connect(self._update_transparency_state)
         self._update_transparency_state()
+        self._apply_collapsed_state()
+
+    @property
+    def is_collapsed(self) -> bool:
+        return self._collapsed
+
+    def panel_width_for_host(self, host_width: int) -> int:
+        if self._collapsed:
+            return 44
+        return min(320, max(280, int(max(0, host_width) * 0.4)))
+
+    def set_collapsed(self, collapsed: bool) -> None:
+        collapsed = bool(collapsed)
+        if collapsed == self._collapsed:
+            return
+        self._collapsed = collapsed
+        self._apply_collapsed_state()
+        self.collapsed_changed.emit(collapsed)
+
+    def toggle_collapsed(self) -> None:
+        self.set_collapsed(not self._collapsed)
+
+    def _apply_collapsed_state(self) -> None:
+        collapsed = self._collapsed
+        self.scroll.setVisible(not collapsed)
+        self._title.setVisible(not collapsed)
+        self.setMinimumWidth(44 if collapsed else 280)
+        self.setMaximumWidth(44 if collapsed else 360)
+        self.collapse_button.setText("⚙" if collapsed else "›")
+        self.collapse_button.setToolTip(
+            "展开参数面板" if collapsed else "折叠参数面板"
+        )
+        self.collapse_button.setAccessibleName(self.collapse_button.toolTip())
 
     @staticmethod
     def _double(minimum, maximum, value, step):

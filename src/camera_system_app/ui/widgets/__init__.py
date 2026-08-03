@@ -16,6 +16,7 @@ from camera_system_app.ui.widgets.viewer_inspector import (
 from camera_system_app.ui.widgets.viewer_toolbar import ViewerToolbar
 from camera_system_app.ui.widgets.viewer_timeline import ViewerTimelineWidget
 from camera_system_app.ui.widgets.viewer_render_dialog import ViewerRenderDialog
+from camera_system_app.ui.widgets.viewer_stage import ViewerStage
 
 __all__ = [
     "EmptyState",
@@ -30,4 +31,5 @@ __all__ = [
     "ViewerToolbar",
     "ViewerTimelineWidget",
     "ViewerRenderDialog",
+    "ViewerStage",
 ]

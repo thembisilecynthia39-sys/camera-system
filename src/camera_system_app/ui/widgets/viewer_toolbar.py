@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QToolButton,
     QVBoxLayout,
+    QSizePolicy,
     QWidget,
 )
 
@@ -37,6 +38,7 @@ class ViewerToolbar(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("viewerToolbar")
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(4)
@@ -102,6 +104,7 @@ class ViewerToolbar(QWidget):
         playback_row.addWidget(self.play_button)
         playback_row.addWidget(self.stop_button)
         self.inspector_button = self._button("参数", "显示或隐藏查看器参数面板")
+        self.inspector_button.setCheckable(True)
         self.timeline_button = self._button("时间轴", "显示或隐藏 Camera Director 时间轴")
         playback_row.addWidget(self.inspector_button)
         playback_row.addWidget(self.timeline_button)
@@ -174,6 +177,11 @@ class ViewerToolbar(QWidget):
 
     def set_project_dirty(self, dirty):
         self.save_button.setText("保存*" if dirty else "保存")
+
+    def set_inspector_expanded(self, expanded):
+        blocker = QSignalBlocker(self.inspector_button)
+        self.inspector_button.setChecked(bool(expanded))
+        del blocker
 
     def resizeEvent(self, event):
         narrow = event.size().width() < 900

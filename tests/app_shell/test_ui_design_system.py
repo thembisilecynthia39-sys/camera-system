@@ -22,7 +22,7 @@ from camera_system_app.domain import (
     ReconstructionJob,
     ReconstructionState,
 )
-from camera_system_app.ui.design_tokens import SEMANTIC_DARK, SEMANTIC_LIGHT
+from camera_system_app.ui.design_tokens import SEMANTIC_DARK, SEMANTIC_LIGHT, style_tokens
 from camera_system_app.ui.main_window import MainWindow
 from camera_system_app.ui.pages import (
     HistoryPage,
@@ -37,6 +37,7 @@ from camera_system_app.ui.widgets import (
     MetricCard,
     PageHeader,
     StatusBanner,
+    ViewerInspector,
     WorkflowStage,
 )
 
@@ -104,6 +105,23 @@ def test_stylesheet_resolves_tokens_and_styles_model_views():
     assert "QTableView" in stylesheet
     assert SEMANTIC_LIGHT["interactive"] in stylesheet
     assert SEMANTIC_DARK["background"] in stylesheet
+
+
+def test_viewer_tokens_define_dark_overlay_roles():
+    tokens = style_tokens()
+
+    assert tokens["dark_viewer_overlay"] != tokens["light_surface"]
+    assert tokens["dark_viewer_raised"] != tokens["light_surface"]
+    assert tokens["dark_viewer_border"]
+
+
+def test_viewer_controls_have_dark_scope_object_names(qapp):
+    inspector = ViewerInspector()
+
+    assert inspector.objectName() == "viewerInspector"
+    assert inspector.scroll.objectName() == "viewerInspectorScroll"
+    assert inspector.content.objectName() == "viewerInspectorContent"
+    assert inspector.background_color_edit.objectName() == "viewerInspectorInput"
 
 
 def test_status_banner_exposes_semantic_symbol_and_accessible_text(qapp):

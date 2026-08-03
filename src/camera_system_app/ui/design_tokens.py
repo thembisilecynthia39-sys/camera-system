@@ -84,6 +84,10 @@ SEMANTIC_DARK = MappingProxyType(
         "warning_background": PRIMITIVES["dark_warning_bg"],
         "danger": PRIMITIVES["dark_danger"],
         "danger_background": PRIMITIVES["dark_danger_bg"],
+        "viewer_overlay": PRIMITIVES["navy_900"],
+        "viewer_raised": PRIMITIVES["navy_800"],
+        "viewer_hover": PRIMITIVES["navy_700"],
+        "viewer_border": PRIMITIVES["dark_border"],
     }
 )
 

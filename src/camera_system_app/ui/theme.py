@@ -532,6 +532,111 @@ _QSS = Template(
         background: $dark_background;
         border: none;
     }
+    QWidget#resultPageSurface QFrame#viewerFrame {
+        background: $dark_background;
+        border: none;
+    }
+    QWidget#resultPageSurface QFrame#viewerStage {
+        background: $dark_background;
+        border: 1px solid $dark_viewer_border;
+        border-radius: $radius_md;
+    }
+    QWidget#resultPageSurface QWidget#viewerToolbar,
+    QWidget#resultPageSurface QWidget#viewerTimeline {
+        background: $dark_viewer_overlay;
+        color: $dark_text;
+        border: 1px solid $dark_viewer_border;
+    }
+    QWidget#resultPageSurface QWidget#viewerToolbar QComboBox,
+    QWidget#resultPageSurface QWidget#viewerTimeline QComboBox,
+    QWidget#resultPageSurface QWidget#viewerTimeline QLineEdit,
+    QWidget#resultPageSurface QWidget#viewerTimeline QSpinBox,
+    QWidget#resultPageSurface QWidget#viewerTimeline QDoubleSpinBox,
+    QWidget#resultPageSurface QWidget#viewerInspector QLineEdit,
+    QWidget#resultPageSurface QWidget#viewerInspector QComboBox,
+    QWidget#resultPageSurface QWidget#viewerInspector QSpinBox,
+    QWidget#resultPageSurface QWidget#viewerInspector QDoubleSpinBox,
+    QWidget#resultPageSurface QWidget#viewerInspector QPushButton,
+    QWidget#resultPageSurface QWidget#viewerInspector QToolButton {
+        background: $dark_viewer_raised;
+        color: $dark_text;
+        border: 1px solid $dark_viewer_border;
+        selection-background-color: $dark_interactive;
+        selection-color: $dark_background;
+    }
+    QWidget#resultPageSurface QWidget#viewerToolbar QComboBox:hover,
+    QWidget#resultPageSurface QWidget#viewerTimeline QComboBox:hover,
+    QWidget#resultPageSurface QWidget#viewerTimeline QLineEdit:hover,
+    QWidget#resultPageSurface QWidget#viewerTimeline QSpinBox:hover,
+    QWidget#resultPageSurface QWidget#viewerTimeline QDoubleSpinBox:hover,
+    QWidget#resultPageSurface QWidget#viewerInspector QLineEdit:hover,
+    QWidget#resultPageSurface QWidget#viewerInspector QComboBox:hover,
+    QWidget#resultPageSurface QWidget#viewerInspector QSpinBox:hover,
+    QWidget#resultPageSurface QWidget#viewerInspector QDoubleSpinBox:hover,
+    QWidget#resultPageSurface QWidget#viewerInspector QPushButton:hover,
+    QWidget#resultPageSurface QWidget#viewerInspector QToolButton:hover {
+        background: $dark_viewer_hover;
+        border-color: $dark_interactive;
+    }
+    QWidget#resultPageSurface QWidget#viewerInspector QToolButton {
+        text-align: left;
+        font-weight: 700;
+    }
+    QWidget#resultPageSurface QFrame#viewerInspectorHeader {
+        background: transparent;
+        border-bottom: 1px solid $dark_viewer_border;
+    }
+    QWidget#resultPageSurface QLabel#viewerInspectorTitle,
+    QWidget#resultPageSurface QLabel#viewerTimelineDuration,
+    QWidget#resultPageSurface QLabel#viewerTimelineFrame {
+        color: $dark_text;
+        font-weight: 700;
+    }
+    QWidget#resultPageSurface QWidget#viewerInspector QScrollArea#viewerInspectorScroll,
+    QWidget#resultPageSurface QWidget#viewerInspector QWidget#viewerInspectorContent,
+    QWidget#resultPageSurface QScrollArea#viewerInspectorScroll > QWidget > QWidget {
+        background: $dark_viewer_overlay;
+        border: none;
+    }
+    QWidget#resultPageSurface QWidget#viewerInspector QLabel,
+    QWidget#resultPageSurface QWidget#viewerInspector QCheckBox,
+    QWidget#resultPageSurface QWidget#viewerTimeline QCheckBox {
+        background: transparent;
+        color: $dark_text_muted;
+    }
+    QWidget#resultPageSurface QWidget#viewerInspector QCheckBox::indicator,
+    QWidget#resultPageSurface QWidget#viewerTimeline QCheckBox::indicator {
+        width: 18px;
+        height: 18px;
+        background: $dark_viewer_raised;
+        border: 1px solid $dark_viewer_border;
+        border-radius: $radius_sm;
+    }
+    QWidget#resultPageSurface QWidget#viewerInspector QCheckBox::indicator:checked,
+    QWidget#resultPageSurface QWidget#viewerTimeline QCheckBox::indicator:checked {
+        background: $dark_interactive;
+        border-color: $dark_interactive;
+    }
+    QWidget#resultPageSurface QWidget#viewerInspector QComboBox QAbstractItemView,
+    QWidget#resultPageSurface QWidget#viewerToolbar QComboBox QAbstractItemView,
+    QWidget#resultPageSurface QWidget#viewerTimeline QComboBox QAbstractItemView {
+        background: $dark_viewer_raised;
+        color: $dark_text;
+        border: 1px solid $dark_viewer_border;
+        selection-background-color: $dark_interactive;
+        selection-color: $dark_background;
+    }
+    QWidget#resultPageSurface QWidget#viewerTimeline QSlider::groove:horizontal {
+        height: 4px;
+        background: $dark_viewer_border;
+    }
+    QWidget#resultPageSurface QWidget#viewerTimeline QSlider::handle:horizontal {
+        width: 14px;
+        margin: -5px 0;
+        background: $dark_interactive;
+        border: 1px solid $dark_interactive;
+        border-radius: 7px;
+    }
 
     QStatusBar {
         background: $light_surface;

@@ -26,7 +26,8 @@ class BasePage(QWidget):
         root_layout = QVBoxLayout(self)
         root_layout.setContentsMargins(28, 24, 28, 24)
         root_layout.setSpacing(18)
-        root_layout.addWidget(PageHeader(title, description, eyebrow))
+        self._page_header = PageHeader(title, description, eyebrow)
+        root_layout.addWidget(self._page_header)
 
         self._scroll = None
         if scrollable:
@@ -45,6 +46,11 @@ class BasePage(QWidget):
             root_layout.addWidget(self._scroll, 1)
         else:
             self.layout = root_layout
+
+    def set_page_header_visible(self, visible: bool) -> None:
+        """Show or hide the page-level heading without changing page ownership."""
+
+        self._page_header.setVisible(bool(visible))
 
     def add_card(
         self,

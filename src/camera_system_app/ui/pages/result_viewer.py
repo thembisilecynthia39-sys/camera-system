@@ -5,10 +5,8 @@ from pathlib import Path
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QFrame,
-    QHBoxLayout,
     QLabel,
     QPushButton,
-    QSplitter,
     QVBoxLayout,
 )
 
@@ -17,6 +15,7 @@ from camera_system_app.ui.widgets import (
     EmptyState,
     StatusBanner,
     ViewerInspector,
+    ViewerStage,
     ViewerToolbar,
     ViewerTimelineWidget,
 )
@@ -62,54 +61,25 @@ class ResultViewerPage(BasePage):
         self._local_path = None
         self.result_root = Path(result_root).resolve()
         self._viewer_widget = None
-        self._narrow_mode = False
         self._sphere_available = True
         self._sphere_error = ""
         self._banner = StatusBanner("当前没有已完成的本地重建结果。")
-        self.layout.addWidget(self._banner)
+        self._banner.setVisible(False)
 
-        card = self.add_card(
-            "结果工具栏",
-            "选择本地 PLY，加载后可重置视角或重新载入。",
-        )
-        self._source_card = card.parentWidget()
-        self._result = QLabel("结果目录：" + result_root)
-        self._result.setWordWrap(True)
-        viewer = QLabel("q3dviewer 源码：" + viewer_root)
-        viewer.setObjectName("mutedText")
-        viewer.setWordWrap(True)
-        controls = QHBoxLayout()
-        self._select = QPushButton("选择本地 PLY")
-        self._select.setAccessibleName("选择本地 Gaussian PLY")
-        self._select.clicked.connect(self.select_local_result_requested.emit)
         self._action = QPushButton("加载当前 PLY")
         self._action.setObjectName("primaryButton")
         self._action.setEnabled(False)
         self._action.clicked.connect(self.open_current_result)
-        self._reset = QPushButton("重置视角")
-        self._reset.setEnabled(False)
-        self._reset.clicked.connect(self.reset_view_requested.emit)
-        hint = QLabel(
-            "右键拖动 360° 环视 · 左键拖动平移 · 滚轮缩放 · "
-            "移动时快速预览，停下后恢复高质量"
-        )
-        hint.setObjectName("mutedText")
-        hint.setWordWrap(True)
-        controls.addWidget(self._select)
-        controls.addWidget(self._action)
-        controls.addWidget(self._reset)
-        controls.addStretch(1)
-        controls.addWidget(hint)
-        card.addWidget(self._result)
-        card.addWidget(viewer)
-        card.addLayout(controls)
+        self._action.setVisible(False)
 
         self._viewer_frame = QFrame()
-        self._viewer_frame.setObjectName("contentCard")
+        self._viewer_frame.setObjectName("viewerFrame")
         self._viewer_layout = QVBoxLayout(self._viewer_frame)
-        self._viewer_layout.setContentsMargins(2, 2, 2, 2)
+        self._viewer_layout.setContentsMargins(0, 0, 0, 0)
+        self._viewer_layout.setSpacing(0)
         self._toolbar = ViewerToolbar()
         self._toolbar.setEnabled(False)
+        self._reset = self._toolbar._reset
         self._toolbar.open_requested.connect(self.select_local_result_requested.emit)
         self._toolbar.save_requested.connect(self.save_requested.emit)
         self._toolbar.save_as_requested.connect(self.save_as_requested.emit)
@@ -127,8 +97,6 @@ class ResultViewerPage(BasePage):
         self._toolbar.timeline_requested.connect(self._toggle_timeline)
         self._viewer_layout.addWidget(self._toolbar)
 
-        self._studio_splitter = QSplitter(Qt.Orientation.Horizontal)
-        self._studio_splitter.setObjectName("viewerStudioSplitter")
         self._viewport_frame = QFrame()
         self._viewport_frame.setObjectName("viewerViewport")
         self._viewport_layout = QVBoxLayout(self._viewport_frame)
@@ -140,6 +108,9 @@ class ResultViewerPage(BasePage):
         self._viewport_layout.addWidget(self._camera_info_label)
         self._inspector = ViewerInspector()
         self._inspector.setVisible(False)
+        self._inspector.collapsed_changed.connect(
+            lambda collapsed: self._toolbar.set_inspector_expanded(not collapsed)
+        )
         self._inspector.display_settings_changed.connect(
             self.display_settings_changed.emit
         )
@@ -162,11 +133,8 @@ class ResultViewerPage(BasePage):
         self._inspector.bookmark_delete_requested.connect(
             self.bookmark_delete_requested.emit
         )
-        self._studio_splitter.addWidget(self._viewport_frame)
-        self._studio_splitter.addWidget(self._inspector)
-        self._studio_splitter.setStretchFactor(0, 1)
-        self._studio_splitter.setStretchFactor(1, 0)
-        self._viewer_layout.addWidget(self._studio_splitter, 1)
+        self._viewer_stage = ViewerStage(self._viewport_frame, self._inspector)
+        self._viewer_layout.addWidget(self._viewer_stage, 1)
         self._timeline = ViewerTimelineWidget()
         self._timeline.setVisible(False)
         self._timeline.timeline_changed.connect(self.timeline_changed.emit)
@@ -181,16 +149,22 @@ class ResultViewerPage(BasePage):
             self.select_local_result_requested.emit
         )
         self._empty = self._empty_state
+        self._select = self._empty_state.action_button
+        self._select.setAccessibleName("选择本地 Gaussian PLY")
         self._viewport_layout.addWidget(self._empty, 1)
+        self._viewer_stage.setVisible(True)
+        self.set_page_header_visible(False)
+        self.layout.setContentsMargins(0, 0, 0, 0)
+        self.layout.setSpacing(0)
+        self.layout.addWidget(self._banner)
         self.layout.addWidget(self._viewer_frame, 1)
         self.layout.addWidget(self._timeline)
 
     def set_result_available(self, local_path: str) -> None:
         path = Path(local_path).resolve()
         self._local_path = path
-        self._result.setText("Jetson 本地结果：" + str(path))
         if path.is_file():
-            self._banner.set_status("本地结果文件可用，可以加载。", "success")
+            self._banner.setVisible(False)
             self._action.setEnabled(True)
         else:
             self.show_load_error("结果文件不存在：{}".format(path))
@@ -200,9 +174,8 @@ class ResultViewerPage(BasePage):
             self.open_local_result_requested.emit(str(self._local_path))
 
     def show_loading(self, path: str) -> None:
-        self._source_card.show()
         self.set_sphere_modes_available(True)
-        self._banner.set_status("正在后台解析 PLY：{}".format(path), "success")
+        self._set_banner_status("正在后台解析 PLY：{}".format(path), "success")
         self._action.setEnabled(False)
         self._reset.setEnabled(False)
         self._toolbar.setEnabled(False)
@@ -216,19 +189,15 @@ class ResultViewerPage(BasePage):
             self._viewer_widget = widget
             self._viewport_layout.addWidget(widget, 1)
         self._viewer_widget.show()
-        self._source_card.hide()
         self._toolbar.setEnabled(True)
         self._inspector.setVisible(True)
         self._timeline.setVisible(True)
-        self._apply_responsive_layout()
+        self._viewer_stage.relayout()
         self._update_viewport_size()
         if self._sphere_available:
-            self._banner.set_status(
-                "已加载 {:,} 个 Gaussian：{}".format(gaussian_count, path),
-                "success",
-            )
+            self._banner.setVisible(False)
         else:
-            self._banner.set_status(
+            self._set_banner_status(
                 "外接球显示不可用：{}；已加载 {:,} 个 Gaussian，标准 Gaussian 仍可使用".format(
                     self._sphere_error or "渲染器不支持",
                     gaussian_count,
@@ -277,12 +246,14 @@ class ResultViewerPage(BasePage):
         self._toolbar.set_sphere_modes_available(available, error)
         self._inspector.set_sphere_modes_available(available, error)
         if not available:
-            self._banner.set_status(
+            self._set_banner_status(
                 "外接球显示不可用：{}；标准 Gaussian 仍可继续使用".format(
                     error or "渲染器不支持"
                 ),
                 "warning",
             )
+        elif self._viewer_widget is not None:
+            self._banner.setVisible(False)
 
     def set_playing(self, playing: bool) -> None:
         self._toolbar.set_playing(playing)
@@ -302,35 +273,16 @@ class ResultViewerPage(BasePage):
         self._timeline.setEnabled(not rendering)
 
     def _toggle_inspector(self) -> None:
-        if self._narrow_mode:
-            self._timeline.hide()
-            self._inspector.show()
-        else:
-            self._inspector.setVisible(not self._inspector.isVisible())
-
-    def _toggle_timeline(self) -> None:
-        if self._narrow_mode:
-            self._inspector.hide()
-            self._timeline.show()
-        else:
-            self._timeline.setVisible(not self._timeline.isVisible())
-
-    def _apply_responsive_layout(self) -> None:
         if self._viewer_widget is None:
             return
-        narrow = self.width() < 900
-        if narrow and not self._narrow_mode:
-            self._narrow_mode = True
-            self._inspector.hide()
-            self._timeline.show()
-        elif not narrow and self._narrow_mode:
-            self._narrow_mode = False
-            self._inspector.show()
-            self._timeline.show()
+        self._inspector.set_collapsed(not self._inspector.is_collapsed)
+
+    def _toggle_timeline(self) -> None:
+        self._timeline.setVisible(not self._timeline.isVisible())
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
-        self._apply_responsive_layout()
+        self._viewer_stage.relayout()
         self._update_viewport_size()
 
     def _update_viewport_size(self) -> None:
@@ -341,7 +293,10 @@ class ResultViewerPage(BasePage):
         self._inspector.set_viewport_size(width, height)
 
     def show_load_error(self, message: str) -> None:
-        self._source_card.show()
-        self._banner.set_status("结果加载失败：{}".format(message), "warning")
+        self._set_banner_status("结果加载失败：{}".format(message), "warning")
         self._action.setEnabled(bool(self._local_path and self._local_path.is_file()))
         self._reset.setEnabled(self._viewer_widget is not None)
+
+    def _set_banner_status(self, text: str, status: str) -> None:
+        self._banner.set_status(text, status)
+        self._banner.setVisible(True)
