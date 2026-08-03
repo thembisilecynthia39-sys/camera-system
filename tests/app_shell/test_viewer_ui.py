@@ -123,6 +123,7 @@ def test_result_page_is_a_clean_viewer_shell_with_right_overlay(qapp, tmp_path):
     qapp.processEvents()
 
     assert page._inspector.width() > 44
+    assert page._inspector.geometry().right() + 1 == page._viewer_stage.width() - 12
     assert page._viewer_stage.viewport_rect().size() == before
     page.hide()
 

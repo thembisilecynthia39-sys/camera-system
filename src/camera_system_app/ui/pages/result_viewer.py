@@ -108,9 +108,7 @@ class ResultViewerPage(BasePage):
         self._viewport_layout.addWidget(self._camera_info_label)
         self._inspector = ViewerInspector()
         self._inspector.setVisible(False)
-        self._inspector.collapsed_changed.connect(
-            lambda collapsed: self._toolbar.set_inspector_expanded(not collapsed)
-        )
+        self._inspector.collapsed_changed.connect(self._on_inspector_collapsed)
         self._inspector.display_settings_changed.connect(
             self.display_settings_changed.emit
         )
@@ -276,6 +274,10 @@ class ResultViewerPage(BasePage):
         if self._viewer_widget is None:
             return
         self._inspector.set_collapsed(not self._inspector.is_collapsed)
+
+    def _on_inspector_collapsed(self, collapsed: bool) -> None:
+        self._viewer_stage.relayout()
+        self._toolbar.set_inspector_expanded(not collapsed)
 
     def _toggle_timeline(self) -> None:
         self._timeline.setVisible(not self._timeline.isVisible())
