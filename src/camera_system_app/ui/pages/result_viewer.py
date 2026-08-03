@@ -196,6 +196,17 @@ class ResultViewerPage(BasePage):
     def set_playing(self, playing: bool) -> None:
         self._toolbar.set_playing(playing)
 
+    def set_rendering(self, rendering: bool) -> None:
+        """Freeze scene-editing controls while a final frame is being rendered."""
+
+        rendering = bool(rendering)
+        self._select.setEnabled(not rendering)
+        self._action.setEnabled(not rendering and bool(self._local_path))
+        self._reset.setEnabled(not rendering and self._viewer_widget is not None)
+        self._toolbar.setEnabled(not rendering and self._viewer_widget is not None)
+        self._inspector.setEnabled(not rendering)
+        self._timeline.setEnabled(not rendering)
+
     def show_load_error(self, message: str) -> None:
         self._banner.set_status("结果加载失败：{}".format(message), "warning")
         self._action.setEnabled(bool(self._local_path and self._local_path.is_file()))

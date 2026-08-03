@@ -9,6 +9,12 @@ from pathlib import Path
 from PySide6.QtCore import QEvent, QObject, Qt
 from PySide6.QtWidgets import QFileDialog, QMessageBox
 
+from camera_system_app.application.viewer_render_plan import RenderPlan, RenderPlanError
+from camera_system_app.ui.viewer_render_controller import (
+    ViewerRenderController,
+    ViewerRenderControllerError,
+)
+from camera_system_app.ui.widgets.viewer_render_dialog import ViewerRenderDialog
 from camera_system_app.application.viewer_session import ViewerSession
 from camera_system_app.application.viewer_playback import (
     ViewerPlayback,
@@ -44,6 +50,8 @@ class ViewerBindings(QObject):
         self._capture_adapter = None
         self._session = None
         self._playback = ViewerPlayback(parent=self)
+        self._render_controller = None
+        self._render_dialog = None
         self._project_store = ViewerProjectStore()
         self._project_sidecar = None
         self._presentation_state = None
@@ -71,6 +79,7 @@ class ViewerBindings(QObject):
         window.result_page.play_requested.connect(self.play)
         window.result_page.pause_requested.connect(self.pause)
         window.result_page.stop_requested.connect(self.stop)
+        window.result_page.render_requested.connect(self.start_render)
         window.result_page.presentation_requested.connect(
             lambda: self.set_presentation_mode(not self.is_presentation_mode)
         )
@@ -214,6 +223,99 @@ class ViewerBindings(QObject):
     def stop(self) -> None:
         self._playback.stop()
 
+    def start_render(self, output_path=None):
+        if self._session is None or self._adapter is None:
+            self.window.statusBar().showMessage("● 请先加载一个 3DGS 结果")
+            return None
+        if output_path is None:
+            output_path = self._select_render_output()
+        if not output_path:
+            return None
+        try:
+            plan = RenderPlan.from_project(self._session.project, output_path)
+        except RenderPlanError as exc:
+            self.window.statusBar().showMessage("● 无法开始导出：{}".format(exc))
+            return None
+        controller = self._ensure_render_controller()
+        self._render_dialog = ViewerRenderDialog(plan, self.window)
+        self._render_dialog.cancel_requested.connect(controller.cancel)
+        self._render_dialog.show()
+        self.window.result_page.set_rendering(True)
+        try:
+            controller.start(plan, restore_callback=self._restore_after_render)
+        except ViewerRenderControllerError as exc:
+            self.window.result_page.set_rendering(False)
+            self._render_dialog.set_error(str(exc))
+            self.window.statusBar().showMessage("● 导出启动失败：{}".format(exc))
+            return None
+        self.window.statusBar().showMessage(
+            "● 正在导出 {} 帧到 {}".format(plan.frame_count, plan.output_path)
+        )
+        return plan
+
+    def _ensure_render_controller(self):
+        if self._render_controller is not None:
+            return self._render_controller
+        self._render_controller = ViewerRenderController(
+            self._adapter,
+            parent=self.window,
+        )
+        self._render_controller.progress_changed.connect(self._on_render_progress)
+        self._render_controller.finished.connect(self._on_render_finished)
+        self._render_controller.failed.connect(self._on_render_failed)
+        self._render_controller.cancelled.connect(self._on_render_cancelled)
+        return self._render_controller
+
+    def _select_render_output(self):
+        if self._session is None:
+            return None
+        settings = self._session.project.render
+        source = Path(self._session.project.source_path or "scene.ply")
+        if settings.output_kind.value == "png_sequence":
+            return QFileDialog.getExistingDirectory(
+                self.window,
+                "选择 PNG 序列输出目录",
+                str(source.parent),
+            ) or None
+        suffix = ".png" if settings.output_kind.value == "png" else ".mp4"
+        selected, _ = QFileDialog.getSaveFileName(
+            self.window,
+            "选择 3DGS 展示输出路径",
+            str(source.with_suffix(suffix)),
+            "PNG (*.png);;MP4 视频 (*.mp4);;所有文件 (*)",
+        )
+        return selected or None
+
+    def _on_render_progress(self, progress: float) -> None:
+        if self._render_dialog is not None:
+            self._render_dialog.set_progress(progress)
+
+    def _on_render_finished(self, output_path) -> None:
+        self.window.result_page.set_rendering(False)
+        if self._render_dialog is not None:
+            self._render_dialog.set_finished(output_path)
+        self.window.statusBar().showMessage("● 3DGS 展示输出已完成：{}".format(output_path))
+
+    def _on_render_failed(self, message: str) -> None:
+        self.window.result_page.set_rendering(False)
+        if self._render_dialog is not None:
+            self._render_dialog.set_error(message)
+        self.window.statusBar().showMessage("● 3DGS 展示输出失败：{}".format(message))
+
+    def _on_render_cancelled(self) -> None:
+        self.window.result_page.set_rendering(False)
+        if self._render_dialog is not None:
+            self._render_dialog.status_label.setText("已取消导出，未发布不完整文件")
+        self.window.statusBar().showMessage("● 3DGS 展示输出已取消")
+
+    def _restore_after_render(self) -> None:
+        if self._session is None or self._adapter is None:
+            return
+        self._adapter.set_display_settings(self._session.project.display)
+        self._adapter.set_appearance_settings(self._session.project.appearance)
+        self._adapter.set_camera_pose(self._session.project.camera)
+        self.window.result_page.set_current_frame(0)
+
     def _on_playback_finished(self) -> None:
         self.window.statusBar().showMessage("● 相机漫游预览完成")
 
@@ -348,6 +450,8 @@ class ViewerBindings(QObject):
         self.open_result(selected)
 
     def shutdown(self, timeout_ms: int = 5000) -> bool:
+        if self._render_controller is not None and self._render_controller.is_running:
+            self._render_controller.cancel()
         if self._worker is not None and self._worker.isRunning():
             self._worker.requestInterruption()
             if not self._worker.wait(timeout_ms):
@@ -383,6 +487,7 @@ class ViewerBindings(QObject):
             )
             self._session = ViewerSession(self._adapter, project)
             self._session.apply_project(project)
+            self._ensure_render_controller()
             self._playback.set_timeline(project.timeline)
             self.window.result_page.set_timeline(project.timeline)
             self.window.result_page._inspector.set_display_settings(project.display)

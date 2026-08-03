@@ -7,6 +7,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import time
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -132,6 +133,10 @@ class BoundedFrameSink:
         with self._lock:
             return self._aborted
 
+    @property
+    def available_slots(self) -> int:
+        return max(0, self._queue.maxsize - self._queue.qsize())
+
     def put(self, frame, *, block: bool = True, timeout: float | None = None) -> None:
         with self._lock:
             if self._closed:
@@ -147,20 +152,24 @@ class BoundedFrameSink:
             raise EncoderBackpressureError("编码器队列已满，渲染线程需要等待") from exc
 
     def get(self, timeout: float | None = None):
-        if timeout is None:
-            return self._queue.get()
-        try:
-            return self._queue.get(timeout=max(0.0, float(timeout)))
-        except Empty:
-            raise
+        deadline = None if timeout is None else time.monotonic() + max(0.0, float(timeout))
+        while True:
+            try:
+                wait = 0.05 if deadline is None else max(0.0, min(0.05, deadline - time.monotonic()))
+                return self._queue.get(timeout=wait)
+            except Empty:
+                with self._lock:
+                    if self._closed:
+                        return None
+                if deadline is not None and time.monotonic() >= deadline:
+                    raise
 
     def close(self) -> None:
         with self._lock:
             if self._closed:
                 return
             self._closed = True
-        # The worker drains all submitted frames before consuming this marker.
-        self._queue.put(None)
+        # get() observes the closed state after already queued frames drain.
 
     def abort(self) -> None:
         with self._lock:

@@ -3,13 +3,23 @@
 from __future__ import annotations
 
 from pathlib import Path
+import time
 
-from PySide6.QtWidgets import QFrame
+import numpy as np
+
+from PySide6.QtWidgets import QFrame, QWidget
 
 from camera_system_app.bootstrap import build_context
 from camera_system_app.application.viewer_session import ViewerSession
 from camera_system_app.application.viewer_timeline import sample_timeline
-from camera_system_app.domain.viewer import CameraPose, DisplayMode, DisplaySettings, ViewerProject
+from camera_system_app.domain.viewer import (
+    CameraPose,
+    DisplayMode,
+    DisplaySettings,
+    OutputKind,
+    RenderSettings,
+    ViewerProject,
+)
 from camera_system_app.infrastructure.viewer_project_store import ViewerProjectStore
 from camera_system_app.ui.main_window import MainWindow
 from camera_system_app.ui.viewer_bindings import ViewerBindings
@@ -123,4 +133,48 @@ def test_bindings_drive_adapter_from_exact_timeline_frames(qapp, tmp_path, monke
 
     assert adapter.poses[-1] == sample_timeline(timeline, 1)
     assert binding._playback.current_frame == 1
+    window.deleteLater()
+
+
+def test_bindings_render_a_single_png_and_restore_scene_controls(qapp, tmp_path, monkeypatch):
+    binding, window = _binding(tmp_path, qapp, monkeypatch)
+
+    class FakeAdapter:
+        def set_display_settings(self, _settings):
+            pass
+
+        def set_appearance_settings(self, _settings):
+            pass
+
+        def set_quality(self, _quality):
+            pass
+
+        def set_camera_pose(self, _pose):
+            pass
+
+        def capture_frame(self, width=None, height=None, camera_pose=None):
+            return np.zeros((height, width, 3), dtype=np.uint8)
+
+    project = ViewerProject(
+        source_path="scene.ply",
+        render=RenderSettings(
+            width=3,
+            height=2,
+            output_kind=OutputKind.PNG,
+        ),
+    )
+    binding._adapter = FakeAdapter()
+    binding._session = ViewerSession(binding._adapter, project)
+    window.result_page.set_viewer_widget(QWidget(), "scene.ply", 1)
+    output = tmp_path / "still.png"
+    binding.start_render(output)
+
+    deadline = time.monotonic() + 5.0
+    while binding._render_controller.is_running and time.monotonic() < deadline:
+        qapp.processEvents()
+        time.sleep(0.005)
+
+    assert output.exists()
+    assert binding._render_dialog is not None
+    assert window.result_page._toolbar.isEnabled()
     window.deleteLater()
