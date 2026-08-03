@@ -75,6 +75,29 @@ def test_playback_rejects_empty_timeline_and_invalid_ranges(qapp):
         playback.set_frame_range(0, 99)
 
 
+def test_playback_loops_and_supports_explicit_frame_steps(qapp):
+    timeline = CameraTimeline(
+        shots=_timeline().shots,
+        fps=2.0,
+        loop=True,
+    )
+    playback = ViewerPlayback(timeline)
+    playback.set_frame(3)
+    playback.step_backward()
+    assert playback.current_frame == 2
+    playback.step_forward()
+    assert playback.current_frame == 3
+
+    playback.play()
+    playback.tick()
+    assert playback.current_frame == 4
+    assert playback.is_playing
+    playback.tick()
+    assert playback.current_frame == 0
+    assert playback.is_playing
+    playback.stop()
+
+
 def test_timeline_widget_is_model_backed_and_exposes_shot_actions(qapp):
     widget = ViewerTimelineWidget()
     widget.set_timeline(_timeline())
@@ -109,3 +132,39 @@ def test_timeline_add_shot_captures_the_current_camera_pose(qapp):
     assert widget.timeline.shots[0].start == first_pose
     assert widget.timeline.shots[0].end == second_pose
     assert widget.timeline.shots[1].start == second_pose
+
+
+def test_timeline_edits_shot_timing_easing_fps_and_loop(qapp):
+    widget = ViewerTimelineWidget()
+    widget.set_timeline(_timeline())
+    widget.shot_editor_toggle.click()
+
+    widget.duration_spinbox.setValue(2.5)
+    widget.hold_start_spinbox.setValue(0.25)
+    widget.hold_end_spinbox.setValue(0.5)
+    widget.easing_combo.setCurrentIndex(widget.easing_combo.findData("linear"))
+    widget.fps_spinbox.setValue(24.0)
+    widget.loop_checkbox.setChecked(True)
+
+    shot = widget.timeline.shots[0]
+    assert shot.duration_seconds == 2.5
+    assert shot.hold_start_seconds == 0.25
+    assert shot.hold_end_seconds == 0.5
+    assert shot.easing == "linear"
+    assert widget.timeline.fps == 24.0
+    assert widget.timeline.loop is True
+
+
+def test_timeline_supports_frame_and_shot_navigation(qapp):
+    widget = ViewerTimelineWidget()
+    widget.set_timeline(_timeline())
+    widget.set_current_frame(2)
+
+    widget.previous_frame_button.click()
+    assert widget.frame_slider.value() == 1
+    widget.next_frame_button.click()
+    assert widget.frame_slider.value() == 2
+    widget.next_shot_button.click()
+    assert widget.selected_shot_index == 1
+    widget.previous_shot_button.click()
+    assert widget.selected_shot_index == 0

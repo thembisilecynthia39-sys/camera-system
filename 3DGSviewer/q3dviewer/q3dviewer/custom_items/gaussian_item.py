@@ -296,6 +296,12 @@ class GaussianItem(BaseItem):
         glEnable(GL_BLEND)
         # draw by vert shader
         glUseProgram(self.program)
+        appearance = self.render_controller.appearance_uniforms()
+        set_uniform(self.program, appearance["exposure"], "appearance_exposure")
+        set_uniform(self.program, appearance["tone_mapping"], "appearance_tone_mapping")
+        set_uniform(self.program, appearance["contrast"], "appearance_contrast")
+        set_uniform(self.program, appearance["saturation"], "appearance_saturation")
+        set_uniform(self.program, appearance["vignette"], "appearance_vignette")
         # bind vao and ebo
         glBindVertexArray(self.vao)
         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, self.ebo)
@@ -308,6 +314,9 @@ class GaussianItem(BaseItem):
         glUseProgram(0)
         glDisable(GL_BLEND)
         glEnable(GL_DEPTH_TEST)
+
+    def set_appearance_settings(self, settings):
+        self.render_controller.set_appearance_settings(settings)
 
     def try_sort(self):
         if not self.sort_enabled or self.sort_suspended:

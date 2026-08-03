@@ -6,6 +6,8 @@ from dataclasses import replace
 
 from camera_system_app.domain.viewer import (
     AppearanceSettings,
+    CameraBookmark,
+    CameraMode,
     CameraPose,
     CameraTimeline,
     DisplaySettings,
@@ -40,6 +42,12 @@ class ViewerSession:
         self.adapter.set_display_settings(project.display)
         self.adapter.set_appearance_settings(project.appearance)
         self.adapter.set_camera_pose(project.camera)
+        set_camera_mode = getattr(self.adapter, "set_camera_mode", None)
+        if callable(set_camera_mode):
+            set_camera_mode(project.camera_mode)
+        set_fly_speed = getattr(self.adapter, "set_fly_speed", None)
+        if callable(set_fly_speed):
+            set_fly_speed(project.fly_speed)
         self._dirty = False
 
     def set_display_settings(self, settings):
@@ -61,6 +69,29 @@ class ViewerSession:
             raise ViewerValidationError("camera pose must be a CameraPose value")
         self._project = replace(self._project, camera=pose)
         self.adapter.set_camera_pose(pose)
+        self._dirty = True
+
+    def set_camera_mode(self, mode):
+        mode = mode if isinstance(mode, CameraMode) else CameraMode(mode)
+        self._project = replace(self._project, camera_mode=mode)
+        set_camera_mode = getattr(self.adapter, "set_camera_mode", None)
+        if callable(set_camera_mode):
+            set_camera_mode(mode)
+        self._dirty = True
+
+    def set_fly_speed(self, speed):
+        project = replace(self._project, fly_speed=speed)
+        self._project = project
+        set_fly_speed = getattr(self.adapter, "set_fly_speed", None)
+        if callable(set_fly_speed):
+            set_fly_speed(project.fly_speed)
+        self._dirty = True
+
+    def set_bookmarks(self, bookmarks):
+        bookmarks = tuple(bookmarks)
+        if any(not isinstance(bookmark, CameraBookmark) for bookmark in bookmarks):
+            raise ViewerValidationError("bookmarks must be CameraBookmark values")
+        self._project = replace(self._project, bookmarks=bookmarks)
         self._dirty = True
 
     def set_timeline(self, timeline):

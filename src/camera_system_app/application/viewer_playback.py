@@ -25,6 +25,7 @@ class ViewerPlayback(QObject):
     playback_paused = Signal()
     playback_stopped = Signal()
     playback_finished = Signal()
+    playback_looped = Signal()
     playing_changed = Signal(bool)
 
     def __init__(self, timeline=None, parent=None):
@@ -123,6 +124,24 @@ class ViewerPlayback(QObject):
         if was_playing:
             self.playing_changed.emit(False)
 
+    def step_backward(self):
+        """Select one previous frame without starting draft playback."""
+
+        if self._playing:
+            self.pause()
+        if self._frame_count:
+            start, _ = self._frame_range
+            self._set_current_frame(max(start, self._current_frame - 1), emit=True)
+
+    def step_forward(self):
+        """Select one next frame without starting draft playback."""
+
+        if self._playing:
+            self.pause()
+        if self._frame_count:
+            _, end = self._frame_range
+            self._set_current_frame(min(end, self._current_frame + 1), emit=True)
+
     def tick(self):
         """Advance one frame; public for deterministic tests and render previews."""
 
@@ -130,6 +149,13 @@ class ViewerPlayback(QObject):
             return
         _, end = self._frame_range
         next_frame = self._current_frame + 1
+        if self._timeline.loop:
+            if next_frame > end:
+                self._set_current_frame(self._frame_range[0], emit=True)
+                self.playback_looped.emit()
+            else:
+                self._set_current_frame(next_frame, emit=True)
+            return
         if next_frame >= end:
             self._set_current_frame(end, emit=True)
             self._timer.stop()

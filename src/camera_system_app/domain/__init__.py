@@ -31,6 +31,8 @@ from camera_system_app.domain.errors import (
 )
 from camera_system_app.domain.viewer import (
     AppearanceSettings,
+    CameraBookmark,
+    CameraMode,
     CameraPose,
     CameraShot,
     CameraTimeline,
@@ -68,6 +70,8 @@ __all__ = [
     "normalize_error",
     "user_message",
     "AppearanceSettings",
+    "CameraBookmark",
+    "CameraMode",
     "CameraPose",
     "CameraShot",
     "CameraTimeline",

@@ -6,6 +6,8 @@ import pytest
 
 from camera_system_app.domain.viewer import (
     AppearanceSettings,
+    CameraBookmark,
+    CameraMode,
     CameraPose,
     CameraShot,
     CameraTimeline,
@@ -96,6 +98,27 @@ def test_viewer_project_round_trips_nested_state_without_loss():
     restored = ViewerProject.from_dict(project.to_dict())
 
     assert restored == project
+
+
+def test_viewer_project_round_trip_preserves_camera_bookmarks_and_mode():
+    pose = CameraPose(
+        position=(1.0, 2.0, 4.0),
+        target=(0.0, 0.0, 1.0),
+        fov_degrees=58.0,
+    )
+    project = ViewerProject(
+        camera=pose,
+        camera_mode=CameraMode.FLY,
+        fly_speed=2.5,
+        bookmarks=(CameraBookmark("entrance", "入口", pose),),
+    )
+
+    restored = ViewerProject.from_dict(project.to_dict())
+
+    assert restored == project
+    assert restored.camera_mode is CameraMode.FLY
+    assert restored.fly_speed == pytest.approx(2.5)
+    assert restored.bookmarks[0].name == "入口"
 
 
 @pytest.mark.parametrize(

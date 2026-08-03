@@ -14,6 +14,7 @@ from camera_system_app.domain.viewer import (
     CameraShot,
     CameraTimeline,
     DisplaySettings,
+    DisplayMode,
     OutputKind,
     RenderSettings,
     ViewerProject,
@@ -55,6 +56,7 @@ def test_render_plan_freezes_settings_and_samples_inclusive_endpoints(tmp_path):
     assert plan.display == project.display
     assert plan.appearance == project.appearance
     assert plan.render == project.render
+    assert plan.duration_seconds == pytest.approx(1.0)
 
     with pytest.raises(RenderPlanError):
         plan.frame_pose(3)
@@ -139,12 +141,24 @@ def test_render_controller_cancel_is_terminal_and_does_not_publish(qapp, tmp_pat
 
 
 def test_render_dialog_exposes_frozen_output_summary_and_cancel(qapp, tmp_path):
+    project = _project()
+    project = ViewerProject(
+        camera=project.camera,
+        timeline=project.timeline,
+        display=DisplaySettings(mode=DisplayMode.OVERLAY),
+        appearance=project.appearance,
+        render=project.render,
+    )
     dialog = ViewerRenderDialog(
-        RenderPlan.from_project(_project(), tmp_path / "frames")
+        RenderPlan.from_project(project, tmp_path / "frames")
     )
     assert "3 × 2" in dialog.resolution_label.text()
     assert "3" in dialog.frame_count_label.text()
+    assert "1.00" in dialog.duration_label.text()
+    assert "Gaussian + 球体" in dialog.mode_label.text()
     assert dialog.progress_bar.value() == 0
+    dialog.set_progress(0.5)
+    assert "1 / 3" in dialog.frame_progress_label.text()
     cancelled = []
     dialog.cancel_requested.connect(lambda: cancelled.append(True))
     dialog.cancel_button.click()

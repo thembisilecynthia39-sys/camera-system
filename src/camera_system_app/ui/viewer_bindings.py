@@ -7,7 +7,14 @@ from dataclasses import replace
 from pathlib import Path
 
 from PySide6.QtCore import QEvent, QObject, Qt
-from PySide6.QtWidgets import QFileDialog, QMessageBox
+from PySide6.QtWidgets import (
+    QAbstractSpinBox,
+    QApplication,
+    QComboBox,
+    QFileDialog,
+    QLineEdit,
+    QMessageBox,
+)
 
 from camera_system_app.application.viewer_render_plan import RenderPlan, RenderPlanError
 from camera_system_app.ui.viewer_render_controller import (
@@ -22,6 +29,8 @@ from camera_system_app.application.viewer_playback import (
 )
 from camera_system_app.application.viewer_timeline import sample_timeline
 from camera_system_app.domain.viewer import (
+    CameraBookmark,
+    CameraMode,
     DisplayMode,
     QualityPreset,
     ViewerProject,
@@ -74,6 +83,20 @@ class ViewerBindings(QObject):
         window.result_page.render_settings_changed.connect(
             self.set_render_settings
         )
+        window.result_page.camera_mode_changed.connect(self._on_camera_mode_changed)
+        window.result_page.fly_speed_changed.connect(self._on_fly_speed_changed)
+        window.result_page.fov_changed.connect(self._on_fov_changed)
+        window.result_page.bookmark_add_requested.connect(
+            self._on_bookmark_add_requested
+        )
+        window.result_page.bookmark_load_requested.connect(
+            self._on_bookmark_load_requested
+        )
+        window.result_page.bookmark_delete_requested.connect(
+            self._on_bookmark_delete_requested
+        )
+        window.result_page.save_requested.connect(self.save_project)
+        window.result_page.save_as_requested.connect(self.save_project_as)
         window.result_page.timeline_changed.connect(self._on_timeline_changed)
         window.result_page.frame_selected.connect(self._on_frame_selected)
         window.result_page.play_requested.connect(self.play)
@@ -100,6 +123,8 @@ class ViewerBindings(QObject):
     def open_result(self, path: str) -> None:
         if self._worker is not None:
             return
+        if not self._confirm_dirty_before_open():
+            return
         if (
             self._capture_adapter is not None
             and not self._capture_adapter.result_review_gpu_ready
@@ -124,6 +149,26 @@ class ViewerBindings(QObject):
         worker.finished.connect(lambda current=worker: self._on_finished(current))
         self._worker = worker
         worker.start()
+
+    def _confirm_dirty_before_open(self) -> bool:
+        if self._session is None or not getattr(self._session, "is_dirty", False):
+            return True
+        answer = QMessageBox.warning(
+            self.window,
+            "查看器项目有未保存修改",
+            "打开另一个 PLY 前，是否保存当前查看器项目？",
+            QMessageBox.StandardButton.Save
+            | QMessageBox.StandardButton.Discard
+            | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Save,
+        )
+        if answer == QMessageBox.StandardButton.Save:
+            return self.save_project() is not None
+        if answer == QMessageBox.StandardButton.Discard:
+            self._session.mark_clean()
+            self.window.result_page.set_project_dirty(False)
+            return True
+        return False
 
     def _on_gpu_resources_ready(self, ready: bool) -> None:
         if self._adapter is not None:
@@ -179,6 +224,96 @@ class ViewerBindings(QObject):
         if self._session is None:
             return
         self._session.set_render_settings(settings)
+        self._mark_project_dirty()
+
+    def _on_camera_mode_changed(self, mode: str) -> None:
+        if self._session is None:
+            return
+        try:
+            self._session.set_camera_mode(CameraMode(mode))
+        except (TypeError, ValueError) as exc:
+            self.window.statusBar().showMessage("● 相机模式无效：{}".format(exc))
+            return
+        self._mark_project_dirty()
+
+    def _on_fly_speed_changed(self, speed: float) -> None:
+        if self._session is None:
+            return
+        try:
+            self._session.set_fly_speed(speed)
+        except (TypeError, ValueError) as exc:
+            self.window.statusBar().showMessage("● 飞行速度无效：{}".format(exc))
+            return
+        self._mark_project_dirty()
+
+    def _on_fov_changed(self, fov: float) -> None:
+        if self._session is None:
+            return
+        try:
+            self._session.set_camera_pose(
+                replace(self._session.project.camera, fov_degrees=float(fov))
+            )
+        except (TypeError, ValueError) as exc:
+            self.window.statusBar().showMessage("● 视场角无效：{}".format(exc))
+            return
+        self.window.result_page.set_current_camera_pose(self._session.project.camera)
+        self._mark_project_dirty()
+
+    def _next_bookmark_id(self) -> str:
+        used = {bookmark.bookmark_id for bookmark in self._session.project.bookmarks}
+        index = 1
+        while "bookmark-{}".format(index) in used:
+            index += 1
+        return "bookmark-{}".format(index)
+
+    def _on_bookmark_add_requested(self, name: str) -> None:
+        if self._session is None or self._adapter is None:
+            return
+        name = str(name).strip()
+        if not name:
+            self.window.statusBar().showMessage("● 请输入相机书签名称")
+            return
+        try:
+            pose = self._adapter.get_camera_pose()
+            bookmark = CameraBookmark(self._next_bookmark_id(), name, pose)
+            bookmarks = self._session.project.bookmarks + (bookmark,)
+            self._session.set_bookmarks(bookmarks)
+            self.window.result_page.set_bookmarks(bookmarks)
+        except (TypeError, ValueError) as exc:
+            self.window.statusBar().showMessage("● 无法保存相机书签：{}".format(exc))
+            return
+        self._mark_project_dirty()
+
+    def _on_bookmark_load_requested(self, bookmark_id: str) -> None:
+        if self._session is None:
+            return
+        bookmark = next(
+            (
+                item
+                for item in self._session.project.bookmarks
+                if item.bookmark_id == bookmark_id
+            ),
+            None,
+        )
+        if bookmark is None:
+            return
+        self._session.set_camera_pose(bookmark.pose)
+        self.window.result_page.set_current_camera_pose(bookmark.pose)
+        self.window.result_page.set_camera_pose(bookmark.pose)
+        self._mark_project_dirty()
+
+    def _on_bookmark_delete_requested(self, bookmark_id: str) -> None:
+        if self._session is None:
+            return
+        bookmarks = tuple(
+            item
+            for item in self._session.project.bookmarks
+            if item.bookmark_id != bookmark_id
+        )
+        if len(bookmarks) == len(self._session.project.bookmarks):
+            return
+        self._session.set_bookmarks(bookmarks)
+        self.window.result_page.set_bookmarks(bookmarks)
         self._mark_project_dirty()
 
     def _on_timeline_changed(self, timeline) -> None:
@@ -314,6 +449,12 @@ class ViewerBindings(QObject):
         self._adapter.set_display_settings(self._session.project.display)
         self._adapter.set_appearance_settings(self._session.project.appearance)
         self._adapter.set_camera_pose(self._session.project.camera)
+        set_camera_mode = getattr(self._adapter, "set_camera_mode", None)
+        if callable(set_camera_mode):
+            set_camera_mode(self._session.project.camera_mode)
+        set_fly_speed = getattr(self._adapter, "set_fly_speed", None)
+        if callable(set_fly_speed):
+            set_fly_speed(self._session.project.fly_speed)
         self.window.result_page.set_current_frame(0)
 
     def _on_playback_finished(self) -> None:
@@ -322,6 +463,7 @@ class ViewerBindings(QObject):
     def _mark_project_dirty(self) -> None:
         if self._session is not None:
             suffix = " · 项目有未保存修改" if self._session.is_dirty else ""
+            self.window.result_page.set_project_dirty(self._session.is_dirty)
             self.window.statusBar().showMessage("● 3DGS 查看器就绪" + suffix)
 
     def _sync_camera_from_adapter(self) -> None:
@@ -329,6 +471,7 @@ class ViewerBindings(QObject):
             pose = self._adapter.get_camera_pose()
             self._session.set_camera_pose(pose)
             self.window.result_page.set_current_camera_pose(pose)
+            self.window.result_page.set_camera_pose(pose)
             self._mark_project_dirty()
 
     def _load_project_state(
@@ -379,6 +522,7 @@ class ViewerBindings(QObject):
         saved = self._project_store.save(self._session.project, path)
         self._project_sidecar = saved
         self._session.mark_clean()
+        self.window.result_page.set_project_dirty(False)
         self.window.statusBar().showMessage("● 3DGS 查看器项目已保存：{}".format(saved))
         return saved
 
@@ -428,14 +572,22 @@ class ViewerBindings(QObject):
             self.window.statusBar().setVisible(state["status_visible"])
 
     def eventFilter(self, watched, event):
-        if (
-            watched is self.window
-            and self.is_presentation_mode
-            and event.type() == QEvent.Type.KeyPress
-            and event.key() == Qt.Key.Key_Escape
-        ):
-            self.set_presentation_mode(False)
-            return True
+        if watched is self.window and event.type() == QEvent.Type.KeyPress:
+            if self.is_presentation_mode and event.key() == Qt.Key.Key_Escape:
+                self.set_presentation_mode(False)
+                return True
+            focus = QApplication.focusWidget()
+            text_focus = isinstance(focus, (QLineEdit, QAbstractSpinBox, QComboBox))
+            if not text_focus:
+                if event.key() == Qt.Key.Key_Space:
+                    self.pause() if self._playback.is_playing else self.play()
+                    return True
+                if event.key() == Qt.Key.Key_Left:
+                    self._playback.step_backward()
+                    return True
+                if event.key() == Qt.Key.Key_Right:
+                    self._playback.step_forward()
+                    return True
         return super().eventFilter(watched, event)
 
     def select_local_result(self) -> None:
@@ -491,10 +643,15 @@ class ViewerBindings(QObject):
             )
             self._session = ViewerSession(self._adapter, project)
             self._session.apply_project(project)
+            self.window.result_page.set_project_dirty(False)
             self._ensure_render_controller()
             self._playback.set_timeline(project.timeline)
             self.window.result_page.set_timeline(project.timeline)
             self.window.result_page.set_current_camera_pose(project.camera)
+            self.window.result_page.set_camera_pose(project.camera)
+            self.window.result_page.set_camera_mode(project.camera_mode)
+            self.window.result_page.set_fly_speed(project.fly_speed)
+            self.window.result_page.set_bookmarks(project.bookmarks)
             self.window.result_page._inspector.set_display_settings(project.display)
             self.window.result_page._inspector.set_appearance_settings(project.appearance)
             self.window.result_page._inspector.set_render_settings(project.render)

@@ -77,6 +77,14 @@ class RenderPlan:
             return 1
         return timeline_frame_count(self.timeline)
 
+    @property
+    def duration_seconds(self) -> float:
+        """Duration represented by the frozen camera tour, excluding encoding time."""
+
+        if self.render.output_kind is OutputKind.PNG:
+            return 0.0
+        return self.timeline.duration_seconds
+
     def frame_pose(self, frame_index: int) -> CameraPose:
         if isinstance(frame_index, bool):
             raise RenderPlanError("frame_index must be a non-negative integer")

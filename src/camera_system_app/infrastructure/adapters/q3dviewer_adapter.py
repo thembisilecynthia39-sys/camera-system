@@ -13,6 +13,7 @@ from PySide6.QtCore import QObject, QTimer, Signal
 
 from camera_system_app.domain.viewer import (
     AppearanceSettings,
+    CameraMode,
     CameraPose,
     DisplaySettings,
 )
@@ -198,6 +199,13 @@ class Q3DViewerAdapter(QObject):
     def set_quality(self, quality: str) -> str:
         return self.item.set_quality(quality)
 
+    def set_camera_mode(self, mode: CameraMode | str) -> None:
+        mode = mode if isinstance(mode, CameraMode) else CameraMode(mode)
+        self.widget.set_camera_mode(mode.value)
+
+    def set_fly_speed(self, speed: float) -> None:
+        self.widget.set_fly_speed(float(speed))
+
     @property
     def appearance_settings(self) -> AppearanceSettings:
         return self._appearance_settings
@@ -206,6 +214,9 @@ class Q3DViewerAdapter(QObject):
         if not isinstance(settings, AppearanceSettings):
             raise ValueError("appearance settings must be an AppearanceSettings value")
         self._appearance_settings = settings
+        set_appearance = getattr(self.item, "set_appearance_settings", None)
+        if callable(set_appearance):
+            set_appearance(settings)
 
     def get_camera_state(self) -> dict[str, Any]:
         return self.widget.get_camera_state()
@@ -254,23 +265,22 @@ class Q3DViewerAdapter(QObject):
             raise ValueError("width and height must be supplied together")
         camera_state = None
         if camera_pose is not None:
-            current = self.get_camera_pose() if camera_pose is None else camera_pose
-            if not isinstance(current, CameraPose):
+            if not isinstance(camera_pose, CameraPose):
                 raise ValueError("camera_pose must be a CameraPose value")
             from q3dviewer.utils.maths import matrix_to_euler, quaternion_to_matrix
 
-            position = np.asarray(current.position, dtype=np.float64)
-            target = np.asarray(current.target, dtype=np.float64)
+            position = np.asarray(camera_pose.position, dtype=np.float64)
+            target = np.asarray(camera_pose.target, dtype=np.float64)
             distance = float(np.linalg.norm(position - target))
             if distance <= 1e-8:
                 raise ValueError("camera position and target must be different")
             camera_state = {
                 "center": target.tolist(),
                 "euler": matrix_to_euler(
-                    quaternion_to_matrix(current.rotation_xyzw)
+                    quaternion_to_matrix(camera_pose.rotation_xyzw)
                 ).tolist(),
                 "distance": distance,
-                "fov_degrees": current.fov_degrees,
+                "fov_degrees": camera_pose.fov_degrees,
             }
         return self.widget.render_to_array(
             width,

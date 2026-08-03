@@ -9,6 +9,7 @@ import pytest
 
 from camera_system_app.domain.viewer import (
     AppearanceSettings,
+    CameraMode,
     CameraPose,
     DisplayMode,
     DisplaySettings,
@@ -47,13 +48,26 @@ def test_adapter_round_trips_domain_camera_pose_through_native_orbit_state(qapp)
     adapter.release()
 
 
-def test_adapter_keeps_appearance_state_at_the_boundary_until_postprocess_exists(qapp):
+def test_adapter_applies_roaming_mode_and_fly_speed_to_embedded_widget(qapp):
+    adapter = Q3DViewerAdapter(PROJECT_ROOT)
+
+    adapter.set_camera_mode(CameraMode.FLY)
+    adapter.set_fly_speed(2.5)
+
+    assert adapter.widget.camera_mode == "fly"
+    assert adapter.widget.fly_speed == pytest.approx(2.5)
+    assert adapter.get_camera_state()["camera_mode"] == "fly"
+    adapter.release()
+
+
+def test_adapter_applies_appearance_state_to_interactive_and_final_boundaries(qapp):
     adapter = Q3DViewerAdapter(PROJECT_ROOT)
     settings = AppearanceSettings(exposure=1.0)
 
     adapter.set_appearance_settings(settings)
 
     assert adapter.appearance_settings == settings
+    assert adapter.item.render_controller.appearance_settings == settings
     adapter.release()
 
 

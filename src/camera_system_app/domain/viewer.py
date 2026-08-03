@@ -48,6 +48,11 @@ class OutputKind(str, Enum):
     MP4 = "mp4"
 
 
+class CameraMode(str, Enum):
+    ORBIT = "orbit"
+    FLY = "fly"
+
+
 def _finite_float(value: Any, label: str) -> float:
     try:
         result = float(value)
@@ -122,6 +127,42 @@ class CameraPose:
             target=value.get("target", (0.0, 0.0, 0.0)),
             rotation_xyzw=value.get("rotation_xyzw", (0.0, 0.0, 0.0, 1.0)),
             fov_degrees=value.get("fov_degrees", 45.0),
+        )
+
+
+@dataclass(frozen=True)
+class CameraBookmark:
+    """A named camera pose that can be recalled during roaming or editing."""
+
+    bookmark_id: str
+    name: str
+    pose: CameraPose
+
+    def __post_init__(self) -> None:
+        bookmark_id = str(self.bookmark_id).strip()
+        name = str(self.name).strip()
+        if not bookmark_id:
+            raise ViewerValidationError("bookmark_id cannot be empty")
+        if not name:
+            raise ViewerValidationError("bookmark name cannot be empty")
+        if not isinstance(self.pose, CameraPose):
+            raise ViewerValidationError("bookmark pose must be a CameraPose value")
+        object.__setattr__(self, "bookmark_id", bookmark_id)
+        object.__setattr__(self, "name", name)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "bookmark_id": self.bookmark_id,
+            "name": self.name,
+            "pose": self.pose.to_dict(),
+        }
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, Any]) -> "CameraBookmark":
+        return cls(
+            bookmark_id=value.get("bookmark_id", "bookmark"),
+            name=value.get("name", "Bookmark"),
+            pose=CameraPose.from_dict(value.get("pose", {})),
         )
 
 
@@ -417,6 +458,9 @@ class ViewerProject:
     source_sha256: str = ""
     version: int = 1
     camera: CameraPose = field(default_factory=CameraPose)
+    camera_mode: CameraMode = CameraMode.ORBIT
+    fly_speed: float = 1.0
+    bookmarks: Tuple[CameraBookmark, ...] = ()
     timeline: CameraTimeline = field(default_factory=CameraTimeline)
     display: DisplaySettings = field(default_factory=DisplaySettings)
     appearance: AppearanceSettings = field(default_factory=AppearanceSettings)
@@ -441,6 +485,18 @@ class ViewerProject:
         object.__setattr__(self, "source_sha256", digest)
         if not isinstance(self.camera, CameraPose):
             raise ViewerValidationError("camera must be a CameraPose value")
+        object.__setattr__(self, "camera_mode", _enum(self.camera_mode, CameraMode, "camera mode"))
+        fly_speed = _finite_float(self.fly_speed, "fly_speed")
+        if fly_speed <= 0.0:
+            raise ViewerValidationError("fly_speed must be positive")
+        object.__setattr__(self, "fly_speed", fly_speed)
+        bookmarks = tuple(self.bookmarks)
+        if any(not isinstance(bookmark, CameraBookmark) for bookmark in bookmarks):
+            raise ViewerValidationError("bookmarks must be CameraBookmark values")
+        bookmark_ids = [bookmark.bookmark_id for bookmark in bookmarks]
+        if len(set(bookmark_ids)) != len(bookmark_ids):
+            raise ViewerValidationError("bookmark_id values must be unique")
+        object.__setattr__(self, "bookmarks", bookmarks)
         if not isinstance(self.timeline, CameraTimeline):
             raise ViewerValidationError("timeline must be a CameraTimeline value")
         if not isinstance(self.display, DisplaySettings):
@@ -459,6 +515,9 @@ class ViewerProject:
                 "sha256": self.source_sha256,
             },
             "camera": self.camera.to_dict(),
+            "camera_mode": self.camera_mode.value,
+            "fly_speed": self.fly_speed,
+            "bookmarks": [bookmark.to_dict() for bookmark in self.bookmarks],
             "timeline": self.timeline.to_dict(),
             "display": self.display.to_dict(),
             "appearance": self.appearance.to_dict(),
@@ -474,6 +533,9 @@ class ViewerProject:
             source_size=source.get("size", value.get("source_size", 0)),
             source_sha256=source.get("sha256", value.get("source_sha256", "")),
             camera=CameraPose.from_dict(value.get("camera", {})),
+            camera_mode=value.get("camera_mode", CameraMode.ORBIT.value),
+            fly_speed=value.get("fly_speed", 1.0),
+            bookmarks=tuple(CameraBookmark.from_dict(item) for item in value.get("bookmarks", ())),
             timeline=CameraTimeline.from_dict(value.get("timeline", {})),
             display=DisplaySettings.from_dict(value.get("display", {})),
             appearance=AppearanceSettings.from_dict(value.get("appearance", {})),

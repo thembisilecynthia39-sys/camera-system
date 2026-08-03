@@ -8,6 +8,9 @@ from PySide6.QtWidgets import (
     QComboBox,
     QDoubleSpinBox,
     QFormLayout,
+    QHBoxLayout,
+    QLineEdit,
+    QPushButton,
     QScrollArea,
     QToolButton,
     QVBoxLayout,
@@ -16,6 +19,9 @@ from PySide6.QtWidgets import (
 
 from camera_system_app.domain.viewer import (
     AppearanceSettings,
+    CameraBookmark,
+    CameraMode,
+    CameraPose,
     DisplayMode,
     DisplaySettings,
     OutputKind,
@@ -72,6 +78,11 @@ class ViewerInspector(QWidget):
     appearance_settings_changed = Signal(object)
     render_settings_changed = Signal(object)
     fov_changed = Signal(float)
+    camera_mode_changed = Signal(str)
+    fly_speed_changed = Signal(float)
+    bookmark_add_requested = Signal(str)
+    bookmark_load_requested = Signal(str)
+    bookmark_delete_requested = Signal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -123,7 +134,30 @@ class ViewerInspector(QWidget):
         camera_form = QFormLayout(camera_content)
         camera_form.setContentsMargins(4, 4, 4, 4)
         self.fov = self._double(1.0, 179.0, 45.0, 1.0)
+        self.camera_mode_combo = QComboBox()
+        self.camera_mode_combo.addItem("轨道 Orbit", CameraMode.ORBIT.value)
+        self.camera_mode_combo.addItem("飞行 Fly", CameraMode.FLY.value)
+        self.camera_mode_combo.setAccessibleName("Inspector 相机导航模式")
+        self.fly_speed = self._double(0.05, 20.0, 1.0, 0.1)
+        self.bookmark_combo = QComboBox()
+        self.bookmark_combo.setAccessibleName("Inspector 相机书签")
+        self.bookmark_name_edit = QLineEdit()
+        self.bookmark_name_edit.setPlaceholderText("例如：入口、展厅、细节")
+        self.bookmark_add_button = QPushButton("保存当前位置")
+        self.bookmark_load_button = QPushButton("跳转")
+        self.bookmark_delete_button = QPushButton("删除")
+        bookmark_actions = QHBoxLayout()
+        bookmark_actions.setContentsMargins(0, 0, 0, 0)
+        bookmark_actions.setSpacing(4)
+        bookmark_actions.addWidget(self.bookmark_load_button)
+        bookmark_actions.addWidget(self.bookmark_delete_button)
         camera_form.addRow("视场角", self.fov)
+        camera_form.addRow("导航模式", self.camera_mode_combo)
+        camera_form.addRow("飞行速度", self.fly_speed)
+        camera_form.addRow("书签名称", self.bookmark_name_edit)
+        camera_form.addRow("保存书签", self.bookmark_add_button)
+        camera_form.addRow("已保存书签", self.bookmark_combo)
+        camera_form.addRow("书签操作", bookmark_actions)
 
         appearance_content = QWidget()
         appearance_form = QFormLayout(appearance_content)
@@ -183,6 +217,24 @@ class ViewerInspector(QWidget):
         for control in (self.exposure, self.contrast, self.saturation, self.vignette, self.sharpening):
             control.valueChanged.connect(self._emit_appearance_settings)
         self.fov.valueChanged.connect(lambda value: self.fov_changed.emit(float(value)))
+        self.camera_mode_combo.currentIndexChanged.connect(
+            lambda _index: self.camera_mode_changed.emit(self.camera_mode_combo.currentData())
+        )
+        self.fly_speed.valueChanged.connect(
+            lambda value: self.fly_speed_changed.emit(float(value))
+        )
+        self.bookmark_add_button.clicked.connect(
+            lambda: self.bookmark_add_requested.emit(self.bookmark_name_edit.text().strip())
+        )
+        self.bookmark_load_button.clicked.connect(
+            lambda: self.bookmark_load_requested.emit(self.bookmark_combo.currentData())
+        )
+        self.bookmark_delete_button.clicked.connect(
+            lambda: self.bookmark_delete_requested.emit(self.bookmark_combo.currentData())
+        )
+        self.bookmark_name_edit.textChanged.connect(self._update_bookmark_actions)
+        self.bookmark_combo.currentIndexChanged.connect(self._update_bookmark_actions)
+        self._update_bookmark_actions()
         for control in (self.render_width, self.render_height, self.render_fps, self.output_kind, self.transparent_background):
             signal = (
                 control.valueChanged
@@ -209,6 +261,13 @@ class ViewerInspector(QWidget):
 
     def _emit_render_settings(self, *_args):
         self.render_settings_changed.emit(self.render_settings())
+
+    def _update_bookmark_actions(self, *_args):
+        has_name = bool(self.bookmark_name_edit.text().strip())
+        has_selection = self.bookmark_combo.currentIndex() >= 0
+        self.bookmark_add_button.setEnabled(has_name)
+        self.bookmark_load_button.setEnabled(has_selection)
+        self.bookmark_delete_button.setEnabled(has_selection)
 
     def display_settings(self):
         return DisplaySettings(
@@ -281,6 +340,37 @@ class ViewerInspector(QWidget):
         self.output_kind.setCurrentIndex(self.output_kind.findData(settings.output_kind.value))
         self.transparent_background.setChecked(settings.transparent_background)
         del blockers
+
+    def set_camera_pose(self, pose):
+        if not isinstance(pose, CameraPose):
+            raise ValueError("camera pose must be a CameraPose value")
+        blocker = QSignalBlocker(self.fov)
+        self.fov.setValue(pose.fov_degrees)
+        del blocker
+
+    def set_camera_mode(self, mode):
+        mode = mode if isinstance(mode, CameraMode) else CameraMode(mode)
+        blocker = QSignalBlocker(self.camera_mode_combo)
+        self.camera_mode_combo.setCurrentIndex(
+            self.camera_mode_combo.findData(mode.value)
+        )
+        del blocker
+
+    def set_fly_speed(self, speed):
+        blocker = QSignalBlocker(self.fly_speed)
+        self.fly_speed.setValue(float(speed))
+        del blocker
+
+    def set_bookmarks(self, bookmarks):
+        bookmarks = tuple(bookmarks)
+        if any(not isinstance(bookmark, CameraBookmark) for bookmark in bookmarks):
+            raise ValueError("bookmarks must be CameraBookmark values")
+        blocker = QSignalBlocker(self.bookmark_combo)
+        self.bookmark_combo.clear()
+        for bookmark in bookmarks:
+            self.bookmark_combo.addItem(bookmark.name, bookmark.bookmark_id)
+        del blocker
+        self._update_bookmark_actions()
 
 
 __all__ = ["CollapsibleSection", "ViewerInspector"]

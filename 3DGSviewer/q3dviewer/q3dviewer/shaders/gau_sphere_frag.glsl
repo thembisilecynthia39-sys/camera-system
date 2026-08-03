@@ -14,8 +14,34 @@ uniform float line_width;
 uniform int render_style;
 uniform int color_mode;
 uniform vec3 uniform_color;
+uniform float appearance_exposure = 0.0;
+uniform int appearance_tone_mapping = 2;
+uniform float appearance_contrast = 1.0;
+uniform float appearance_saturation = 1.0;
+uniform float appearance_vignette = 0.0;
 
 out vec4 final_color;
+
+vec3 apply_appearance(vec3 value)
+{
+    value *= exp2(clamp(appearance_exposure, -20.0, 20.0));
+    if (appearance_tone_mapping == 2)
+    {
+        value = (value * (2.51 * value + 0.03)) /
+                (value * (2.43 * value + 0.59) + 0.14);
+    }
+    else if (appearance_tone_mapping == 1)
+    {
+        value = value / (1.0 + value);
+    }
+    value = (value - 0.5) * appearance_contrast + 0.5;
+    float luminance = dot(value, vec3(0.2126, 0.7152, 0.0722));
+    value = mix(vec3(luminance), value, appearance_saturation);
+    vec2 uv = gl_FragCoord.xy / win_size;
+    float radius = distance(uv, vec2(0.5)) * 1.41421356;
+    value *= 1.0 - appearance_vignette * clamp(radius * radius, 0.0, 1.0);
+    return clamp(value, 0.0, 1.0);
+}
 
 void main()
 {
@@ -56,5 +82,6 @@ void main()
             discard;
         alpha *= wire;
     }
+    color = apply_appearance(color);
     final_color = vec4(color * alpha, alpha);
 }

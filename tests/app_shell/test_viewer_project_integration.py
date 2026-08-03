@@ -7,12 +7,15 @@ import time
 
 import numpy as np
 
-from PySide6.QtWidgets import QFrame, QWidget
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QKeyEvent
+from PySide6.QtWidgets import QFrame, QMessageBox, QWidget
 
 from camera_system_app.bootstrap import build_context
 from camera_system_app.application.viewer_session import ViewerSession
 from camera_system_app.application.viewer_timeline import sample_timeline
 from camera_system_app.domain.viewer import (
+    CameraMode,
     CameraPose,
     DisplayMode,
     DisplaySettings,
@@ -177,4 +180,144 @@ def test_bindings_render_a_single_png_and_restore_scene_controls(qapp, tmp_path,
     assert output.exists()
     assert binding._render_dialog is not None
     assert window.result_page._toolbar.isEnabled()
+    window.deleteLater()
+
+
+def test_bindings_keyboard_steps_timeline_without_stealing_text_focus(
+    qapp, tmp_path, monkeypatch
+):
+    binding, window = _binding(tmp_path, qapp, monkeypatch)
+
+    class FakeAdapter:
+        def __init__(self):
+            self.poses = []
+
+        def set_camera_pose(self, pose):
+            self.poses.append(pose)
+
+    from camera_system_app.domain.viewer import CameraShot, CameraTimeline
+
+    adapter = FakeAdapter()
+    timeline = CameraTimeline(
+        shots=(
+            CameraShot(
+                "shot",
+                "镜头",
+                CameraPose(position=(0.0, 0.0, 5.0)),
+                CameraPose(position=(2.0, 0.0, 5.0)),
+                duration_seconds=1.0,
+            ),
+        ),
+        fps=2.0,
+    )
+    binding._adapter = adapter
+    binding._session = ViewerSession(adapter, ViewerProject(timeline=timeline))
+    binding._playback.set_timeline(timeline)
+    binding._playback.set_frame(0)
+
+    event = QKeyEvent(QKeyEvent.KeyPress, Qt.Key.Key_Right, Qt.KeyboardModifier.NoModifier)
+    assert binding.eventFilter(window, event) is True
+    assert binding._playback.current_frame == 1
+    assert adapter.poses[-1] == sample_timeline(timeline, 1)
+    window.deleteLater()
+
+
+def test_toolbar_save_action_publishes_sidecar_and_clears_dirty_state(
+    qapp, tmp_path, monkeypatch
+):
+    binding, window = _binding(tmp_path, qapp, monkeypatch)
+    source = tmp_path / "scene.ply"
+    source.write_bytes(b"scene")
+
+    class FakeAdapter:
+        def set_display_settings(self, _settings):
+            pass
+
+        def set_appearance_settings(self, _settings):
+            pass
+
+        def set_camera_pose(self, _pose):
+            pass
+
+    adapter = FakeAdapter()
+    project = ViewerProject(
+        source_path=str(source.resolve()),
+        source_size=source.stat().st_size,
+        source_sha256=ViewerProjectStore.sha256_file(source),
+    )
+    binding._adapter = adapter
+    binding._session = ViewerSession(adapter, project)
+    binding._session.set_timeline(project.timeline)
+    window.result_page.set_viewer_widget(QWidget(), str(source), 1)
+    binding._mark_project_dirty()
+
+    window.result_page._toolbar.save_button.click()
+
+    sidecar = source.with_suffix(".splatview.json")
+    assert sidecar.is_file()
+    assert binding._session.is_dirty is False
+    assert window.result_page._toolbar.save_button.text() == "保存"
+    window.deleteLater()
+
+
+def test_opening_another_source_can_cancel_when_project_is_dirty(
+    qapp, tmp_path, monkeypatch
+):
+    binding, window = _binding(tmp_path, qapp, monkeypatch)
+
+    class DirtySession:
+        is_dirty = True
+
+    binding._session = DirtySession()
+    monkeypatch.setattr(
+        "camera_system_app.ui.viewer_bindings.QMessageBox.warning",
+        lambda *args, **kwargs: QMessageBox.StandardButton.Cancel,
+    )
+
+    assert binding._confirm_dirty_before_open() is False
+    window.deleteLater()
+
+
+def test_bindings_persist_fly_navigation_and_recall_camera_bookmarks(
+    qapp, tmp_path, monkeypatch
+):
+    binding, window = _binding(tmp_path, qapp, monkeypatch)
+
+    class FakeAdapter:
+        def __init__(self):
+            self.pose = CameraPose(position=(0.0, 0.0, 5.0))
+            self.modes = []
+            self.speeds = []
+            self.poses = []
+
+        def set_camera_mode(self, mode):
+            self.modes.append(mode)
+
+        def set_fly_speed(self, speed):
+            self.speeds.append(speed)
+
+        def get_camera_pose(self):
+            return self.pose
+
+        def set_camera_pose(self, pose):
+            self.pose = pose
+            self.poses.append(pose)
+
+    adapter = FakeAdapter()
+    binding._adapter = adapter
+    binding._session = ViewerSession(adapter, ViewerProject(camera=adapter.pose))
+
+    binding._on_camera_mode_changed(CameraMode.FLY.value)
+    binding._on_fly_speed_changed(2.5)
+    binding._on_bookmark_add_requested("入口")
+    bookmark = binding._session.project.bookmarks[0]
+    binding._on_bookmark_load_requested(bookmark.bookmark_id)
+    binding._on_bookmark_delete_requested(bookmark.bookmark_id)
+
+    assert binding._session.project.camera_mode is CameraMode.FLY
+    assert binding._session.project.fly_speed == 2.5
+    assert adapter.modes == [CameraMode.FLY]
+    assert adapter.speeds == [2.5]
+    assert adapter.poses[-1] == adapter.pose
+    assert binding._session.project.bookmarks == ()
     window.deleteLater()

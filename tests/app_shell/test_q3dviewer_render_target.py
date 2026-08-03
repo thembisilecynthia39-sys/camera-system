@@ -44,6 +44,42 @@ def test_base_widget_camera_state_round_trips_without_transform_accumulation(qap
     widget.deleteLater()
 
 
+def test_base_widget_persists_camera_mode_and_fly_speed(qapp):
+    prepare_q3dviewer(__import__("pathlib").Path(__file__).resolve().parents[2])
+    from q3dviewer.base_glwidget import BaseGLWidget
+
+    widget = BaseGLWidget()
+    state = widget.get_camera_state()
+
+    assert state["camera_mode"] == "orbit"
+    assert state["fly_speed"] == pytest.approx(1.0)
+
+    widget.set_camera_state({**state, "camera_mode": "fly", "fly_speed": 2.5})
+    changed = widget.get_camera_state()
+
+    assert changed["camera_mode"] == "fly"
+    assert changed["fly_speed"] == pytest.approx(2.5)
+    widget.deleteLater()
+
+
+def test_base_widget_fly_rotation_keeps_camera_position(qapp, monkeypatch):
+    prepare_q3dviewer(__import__("pathlib").Path(__file__).resolve().parents[2])
+    from q3dviewer.base_glwidget import BaseGLWidget
+
+    widget = BaseGLWidget()
+    widget.set_camera_mode("fly")
+    calls = []
+    monkeypatch.setattr(widget, "rotate_keep_cam_pos", lambda *args: calls.append("fly"))
+    monkeypatch.setattr(widget, "rotate", lambda *args: calls.append("orbit"))
+    from q3dviewer.Qt import QtCore
+
+    widget.active_keys = {QtCore.Qt.Key_Left}
+    widget.update_movement()
+
+    assert calls == ["fly"]
+    widget.deleteLater()
+
+
 def test_base_widget_rejects_incomplete_camera_state(qapp):
     prepare_q3dviewer(__import__("pathlib").Path(__file__).resolve().parents[2])
     from q3dviewer.base_glwidget import BaseGLWidget

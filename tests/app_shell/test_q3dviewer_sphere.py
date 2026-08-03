@@ -125,6 +125,26 @@ def test_render_controller_exposes_confirmed_sphere_defaults_and_settings():
     assert settings["color"] == pytest.approx((0.1, 0.2, 0.3))
 
 
+def test_sphere_shader_failure_keeps_standard_renderer_available(monkeypatch, tmp_path):
+    prepare_q3dviewer(PROJECT_ROOT)
+    from q3dviewer.custom_items.gaussian_item import GaussianItem
+    from q3dviewer.custom_items.gaussian_sphere_pass import GaussianSpherePass
+
+    monkeypatch.setattr(
+        GaussianSpherePass,
+        "initialize_gl",
+        lambda *_args: (_ for _ in ()).throw(RuntimeError("sphere shader unavailable")),
+    )
+    item = GaussianItem(sort_enabled=False, sort_backend="opengl")
+
+    item.render_controller.initialize_gl(tmp_path)
+
+    assert item.render_controller.sphere_available is False
+    assert "unavailable" in item.render_controller.sphere_error
+    assert item.set_display_mode("sphere_solid") == "standard"
+    assert item.render_controller.mode == "standard"
+
+
 def test_sphere_shaders_declare_shared_data_and_ray_intersection_contract():
     shader_dir = PROJECT_ROOT / "3DGSviewer" / "q3dviewer" / "q3dviewer" / "shaders"
     vertex = (shader_dir / "gau_sphere_vert.glsl").read_text(encoding="utf-8")

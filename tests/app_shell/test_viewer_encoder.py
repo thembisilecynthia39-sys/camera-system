@@ -107,6 +107,36 @@ def test_png_sequence_keeps_frame_count_and_cleans_abort(tmp_path):
     assert not aborted_output.exists()
 
 
+def test_pyav_mp4_encoder_publishes_a_playable_real_video(tmp_path):
+    av = pytest.importorskip("av")
+    output = tmp_path / "tour.mp4"
+    encoder = FrameEncoder(
+        EncoderConfig(
+            output,
+            width=16,
+            height=16,
+            fps=2.0,
+            output_kind=OutputKind.MP4,
+            backend="pyav",
+        )
+    )
+    encoder.start()
+    encoder.submit(np.full((16, 16, 3), 10, dtype=np.uint8))
+    encoder.submit(np.full((16, 16, 3), 80, dtype=np.uint8))
+    assert encoder.finish() == output
+
+    with av.open(str(output), mode="r") as container:
+        stream = container.streams.video[0]
+        decoded = list(container.decode(stream))
+
+    assert output.stat().st_size > 0
+    assert stream.width == 16
+    assert stream.height == 16
+    assert len(decoded) == 2
+    assert float(stream.average_rate) == pytest.approx(2.0)
+    assert encoder.state is EncoderState.FINISHED
+
+
 def test_encoder_rejects_wrong_frame_size_and_does_not_publish(tmp_path):
     output = tmp_path / "bad.png"
     encoder = FrameEncoder(

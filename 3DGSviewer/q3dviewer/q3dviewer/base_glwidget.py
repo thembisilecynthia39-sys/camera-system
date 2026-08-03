@@ -4,7 +4,7 @@ Distributed under MIT license. See LICENSE for more information.
 """
 
 from OpenGL.GL import *
-from math import radians, tan
+from math import isfinite, radians, tan
 import numpy as np
 from q3dviewer.Qt import QtCore, QtGui
 from q3dviewer.utils.maths import frustum, euler_to_matrix, makeT
@@ -22,6 +22,8 @@ class BaseGLWidget(QOpenGLWidget):
         self.setFocusPolicy(QtCore.Qt.FocusPolicy.ClickFocus)
         self.reset()
         self._fov = 60
+        self.camera_mode = "orbit"
+        self.fly_speed = 1.0
         self.items = []
         self.keyTimer = QtCore.QTimer()
         self.color = np.array([0, 0, 0, 1])
@@ -162,6 +164,8 @@ class BaseGLWidget(QOpenGLWidget):
             "euler": [float(value) for value in self.euler],
             "distance": float(self.dist),
             "fov_degrees": float(self._fov),
+            "camera_mode": self.camera_mode,
+            "fly_speed": float(self.fly_speed),
         }
 
     def set_camera_state(self, state):
@@ -177,6 +181,8 @@ class BaseGLWidget(QOpenGLWidget):
             euler = np.asarray(state["euler"], dtype=np.float64)
             distance = float(state["distance"])
             fov = float(state.get("fov_degrees", self._fov))
+            camera_mode = str(state.get("camera_mode", self.camera_mode)).lower()
+            fly_speed = float(state.get("fly_speed", self.fly_speed))
         except (TypeError, ValueError):
             raise ValueError("camera state contains invalid numeric values")
         if center.shape != (3,) or euler.shape != (3,):
@@ -187,10 +193,16 @@ class BaseGLWidget(QOpenGLWidget):
             raise ValueError("camera distance must be positive and finite")
         if not np.isfinite(fov) or not 1.0 <= fov <= 179.0:
             raise ValueError("camera FOV must be between 1 and 179 degrees")
+        if camera_mode not in ("orbit", "fly"):
+            raise ValueError("camera mode must be orbit or fly")
+        if not isfinite(fly_speed) or fly_speed <= 0.0:
+            raise ValueError("fly speed must be positive and finite")
         self.center = center.copy()
         self.euler = euler.copy()
         self.dist = distance
         self._fov = fov
+        self.camera_mode = camera_mode
+        self.fly_speed = fly_speed
         self.need_recalc_view = True
         self._projection_dirty = True
         self.update()
@@ -292,7 +304,7 @@ class BaseGLWidget(QOpenGLWidget):
             rot_speed = 0.2
             dyaw = radians(-diff.x() * rot_speed)
             droll = radians(-diff.y() * rot_speed)
-            if ev.modifiers() & QtCore.Qt.ShiftModifier:
+            if self.camera_mode == "fly" or ev.modifiers() & QtCore.Qt.ShiftModifier:
                 self.rotate_keep_cam_pos(droll, 0, dyaw)
             else:
                 self.rotate(droll, 0, dyaw)
@@ -393,25 +405,28 @@ class BaseGLWidget(QOpenGLWidget):
             return
         rot_speed = 0.5
         trans_speed = max(self.dist * 0.005, 0.1)
+        if self.camera_mode == "fly":
+            trans_speed *= self.fly_speed
         shift_pressed = QtCore.Qt.Key_Shift in self.active_keys
+        keep_camera_position = self.camera_mode == "fly" or shift_pressed
         # Handle rotation keys
         if QtCore.Qt.Key_Up in self.active_keys:
-            if shift_pressed:
+            if keep_camera_position:
                 self.rotate_keep_cam_pos(radians(rot_speed), 0, 0)
             else:
                 self.rotate(radians(rot_speed), 0, 0)
         if QtCore.Qt.Key_Down in self.active_keys:
-            if shift_pressed:
+            if keep_camera_position:
                 self.rotate_keep_cam_pos(radians(-rot_speed), 0, 0)
             else:
                 self.rotate(radians(-rot_speed), 0, 0)
         if QtCore.Qt.Key_Left in self.active_keys:
-            if shift_pressed:
+            if keep_camera_position:
                 self.rotate_keep_cam_pos(0, 0, radians(rot_speed))
             else:
                 self.rotate(0, 0, radians(rot_speed))
         if QtCore.Qt.Key_Right in self.active_keys:
-            if shift_pressed:
+            if keep_camera_position:
                 self.rotate_keep_cam_pos(0, 0, radians(-rot_speed))
             else:
                 self.rotate(0, 0, radians(-rot_speed))
@@ -428,14 +443,17 @@ class BaseGLWidget(QOpenGLWidget):
                     QtCore.Qt.Key_A, QtCore.Qt.Key_D}
         if self.active_keys & dir_keys:
             Rz = euler_to_matrix([0, 0, self.euler[2]])
+            movement_basis = euler_to_matrix(self.euler) if self.camera_mode == "fly" else Rz
             if QtCore.Qt.Key_W in self.active_keys:
-                self.translate(Rz @ np.array([0, trans_speed, 0]))
+                direction = np.array([0, 0, -trans_speed]) if self.camera_mode == "fly" else np.array([0, trans_speed, 0])
+                self.translate(movement_basis @ direction)
             if QtCore.Qt.Key_S in self.active_keys:
-                self.translate(Rz @ np.array([0, -trans_speed, 0]))
+                direction = np.array([0, 0, trans_speed]) if self.camera_mode == "fly" else np.array([0, -trans_speed, 0])
+                self.translate(movement_basis @ direction)
             if QtCore.Qt.Key_A in self.active_keys:
-                self.translate(Rz @ np.array([-trans_speed, 0, 0]))
+                self.translate(movement_basis @ np.array([-trans_speed, 0, 0]))
             if QtCore.Qt.Key_D in self.active_keys:
-                self.translate(Rz @ np.array([trans_speed, 0, 0]))
+                self.translate(movement_basis @ np.array([trans_speed, 0, 0]))
 
     def update_model_view(self):
         if not self._compatibility_pipeline:
@@ -467,6 +485,23 @@ class BaseGLWidget(QOpenGLWidget):
     def set_euler(self, euler):
         self.euler = np.asarray(euler, dtype=np.float64)
         self.need_recalc_view = True
+        self.update()
+
+    def set_camera_mode(self, mode):
+        mode = str(mode).lower()
+        if mode not in ("orbit", "fly"):
+            raise ValueError("camera mode must be orbit or fly")
+        self.camera_mode = mode
+        self.update()
+
+    def set_fly_speed(self, speed):
+        try:
+            speed = float(speed)
+        except (TypeError, ValueError):
+            raise ValueError("fly speed must be a number")
+        if not isfinite(speed) or speed <= 0.0:
+            raise ValueError("fly speed must be positive and finite")
+        self.fly_speed = speed
         self.update()
 
     def set_color(self, color):
@@ -586,6 +621,8 @@ class BaseGLWidget(QOpenGLWidget):
             self.euler = np.asarray(old_state["euler"], dtype=np.float64)
             self.dist = float(old_state["distance"])
             self._fov = float(old_state["fov_degrees"])
+            self.camera_mode = old_state["camera_mode"]
+            self.fly_speed = float(old_state["fly_speed"])
             self.projection_matrix = old_projection
             self.view_matrix = old_view
             self._projection_dirty = old_projection_dirty

@@ -135,6 +135,12 @@ class GaussianSpherePass:
         set_uniform(self.program, int(style_id), "render_style")
         set_uniform(self.program, int(self.COLOR_MODES[values["color_mode"]]), "color_mode")
         set_uniform(self.program, np.asarray(values["color"], dtype=np.float32), "uniform_color")
+        appearance = item.render_controller.appearance_uniforms()
+        set_uniform(self.program, appearance["exposure"], "appearance_exposure")
+        set_uniform(self.program, appearance["tone_mapping"], "appearance_tone_mapping")
+        set_uniform(self.program, appearance["contrast"], "appearance_contrast")
+        set_uniform(self.program, appearance["saturation"], "appearance_saturation")
+        set_uniform(self.program, appearance["vignette"], "appearance_vignette")
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, self.gpu_data.ssbo_gs)
         glBindBufferBase(
             GL_SHADER_STORAGE_BUFFER,

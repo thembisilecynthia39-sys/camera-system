@@ -5,9 +5,11 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QToolButton
+from PySide6.QtWidgets import QLabel, QToolButton, QWidget
 
 from camera_system_app.domain.viewer import (
+    CameraBookmark,
+    CameraMode,
     CameraPose,
     CameraShot,
     CameraTimeline,
@@ -24,7 +26,7 @@ def test_viewer_toolbar_exposes_core_roaming_and_presentation_actions(qapp):
     toolbar = ViewerToolbar()
     names = {button.text() for button in toolbar.findChildren(QToolButton)}
 
-    assert {"打开", "重置", "适配", "播放", "停止", "演示", "导出"} <= names
+    assert {"打开", "重置", "适配", "保存", "另存", "播放", "停止", "演示", "导出"} <= names
     assert toolbar.display_mode_combo.findData(DisplayMode.STANDARD.value) >= 0
     assert toolbar.display_mode_combo.findData(DisplayMode.SPHERE_WIREFRAME.value) >= 0
     assert toolbar.display_mode_combo.findData(DisplayMode.OVERLAY.value) >= 0
@@ -45,6 +47,18 @@ def test_viewer_toolbar_emits_mode_and_playback_signals(qapp):
 
     assert modes == [DisplayMode.SPHERE_SOLID.value]
     assert playback == ["play"]
+
+
+def test_viewer_toolbar_syncing_playback_state_does_not_emit_commands(qapp):
+    toolbar = ViewerToolbar()
+    commands = []
+    toolbar.play_requested.connect(lambda: commands.append("play"))
+    toolbar.pause_requested.connect(lambda: commands.append("pause"))
+
+    toolbar.set_playing(True)
+    toolbar.set_playing(False)
+
+    assert commands == []
 
 
 def test_viewer_inspector_groups_viewer_controls_into_collapsible_sections(qapp):
@@ -74,6 +88,39 @@ def test_viewer_inspector_emits_display_settings_with_sphere_defaults(qapp):
     assert emitted[-1].sphere_sigma_multiplier == 4.0
 
 
+def test_viewer_inspector_exposes_fly_navigation_and_camera_bookmarks(qapp):
+    inspector = ViewerInspector()
+    modes = []
+    speeds = []
+    added = []
+    loaded = []
+    deleted = []
+    inspector.camera_mode_changed.connect(modes.append)
+    inspector.fly_speed_changed.connect(speeds.append)
+    inspector.bookmark_add_requested.connect(added.append)
+    inspector.bookmark_load_requested.connect(loaded.append)
+    inspector.bookmark_delete_requested.connect(deleted.append)
+
+    inspector.camera_mode_combo.setCurrentIndex(
+        inspector.camera_mode_combo.findData(CameraMode.FLY.value)
+    )
+    inspector.fly_speed.setValue(2.5)
+    inspector.bookmark_name_edit.setText("入口")
+    inspector.bookmark_add_button.click()
+
+    pose = CameraPose(position=(1.0, 2.0, 4.0))
+    inspector.set_bookmarks((CameraBookmark("entrance", "入口", pose),))
+    inspector.bookmark_combo.setCurrentIndex(0)
+    inspector.bookmark_load_button.click()
+    inspector.bookmark_delete_button.click()
+
+    assert modes == [CameraMode.FLY.value]
+    assert speeds[-1] == 2.5
+    assert added == ["入口"]
+    assert loaded == ["entrance"]
+    assert deleted == ["entrance"]
+
+
 def test_result_page_contains_studio_shell_and_fits_minimum_window(qapp, tmp_path):
     page = ResultViewerPage(str(tmp_path / "results"), str(tmp_path / "viewer"))
     page.resize(776, 656)
@@ -84,6 +131,52 @@ def test_result_page_contains_studio_shell_and_fits_minimum_window(qapp, tmp_pat
     assert page._inspector.isVisible() is False
     assert page._studio_splitter.minimumSize().width() >= 0
     assert page._toolbar.minimumSizeHint().height() >= 40
+    page.hide()
+
+
+def test_result_page_toolbar_does_not_force_a_wider_than_minimum_window(qapp, tmp_path):
+    page = ResultViewerPage(str(tmp_path / "results"), str(tmp_path / "viewer"))
+    page.resize(720, 600)
+    page.show()
+    qapp.processEvents()
+
+    assert page.minimumSizeHint().width() <= 720
+    page.hide()
+
+
+def test_loaded_result_hides_duplicate_source_card_to_keep_viewport_tall(qapp, tmp_path):
+    page = ResultViewerPage(str(tmp_path / "results"), str(tmp_path / "viewer"))
+    page.resize(720, 600)
+    page.show()
+    page.set_viewer_widget(QLabel(), "scene.ply", 1)
+    qapp.processEvents()
+
+    assert page._source_card.isVisible() is False
+    assert page.minimumSizeHint().height() <= 680
+    page.hide()
+
+
+def test_narrow_viewer_switches_between_timeline_and_inspector_without_squeezing_gl(
+    qapp, tmp_path
+):
+    page = ResultViewerPage(str(tmp_path / "results"), str(tmp_path / "viewer"))
+    page.resize(720, 600)
+    page.show()
+    viewport = QWidget()
+    viewport.setMinimumSize(480, 320)
+    page.set_viewer_widget(viewport, "scene.ply", 1)
+    qapp.processEvents()
+
+    assert page._timeline.isVisible()
+    assert not page._inspector.isVisible()
+    assert page.minimumSizeHint().width() <= 720
+
+    page._toolbar.inspector_button.click()
+    assert page._inspector.isVisible()
+    assert not page._timeline.isVisible()
+    page._toolbar.timeline_button.click()
+    assert page._timeline.isVisible()
+    assert not page._inspector.isVisible()
     page.hide()
 
 
@@ -106,4 +199,18 @@ def test_result_page_exposes_model_backed_camera_director_timeline(qapp, tmp_pat
     assert page._timeline.frame_slider.maximum() == 72
     page.set_current_frame(12)
     assert page._timeline.frame_slider.value() == 12
+    page.hide()
+
+
+def test_result_page_marks_unsaved_viewer_project_changes_on_save_action(qapp, tmp_path):
+    page = ResultViewerPage(str(tmp_path / "results"), str(tmp_path / "viewer"))
+    assert page._toolbar.save_button.isEnabled() is False
+    page.set_viewer_widget(QLabel(), "scene.ply", 1)
+
+    page.set_project_dirty(True)
+
+    assert page._toolbar.save_button.isEnabled()
+    assert page._toolbar.save_button.text() == "保存*"
+    page.set_project_dirty(False)
+    assert page._toolbar.save_button.text() == "保存"
     page.hide()
