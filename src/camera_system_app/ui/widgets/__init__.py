@@ -14,6 +14,7 @@ from camera_system_app.ui.widgets.viewer_inspector import (
     ViewerInspector,
 )
 from camera_system_app.ui.widgets.viewer_toolbar import ViewerToolbar
+from camera_system_app.ui.widgets.viewer_timeline import ViewerTimelineWidget
 
 __all__ = [
     "EmptyState",
@@ -26,4 +27,5 @@ __all__ = [
     "CollapsibleSection",
     "ViewerInspector",
     "ViewerToolbar",
+    "ViewerTimelineWidget",
 ]

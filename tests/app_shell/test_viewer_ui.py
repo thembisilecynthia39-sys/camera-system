@@ -7,10 +7,17 @@ from pathlib import Path
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QToolButton
 
-from camera_system_app.domain.viewer import DisplayMode, DisplaySettings
+from camera_system_app.domain.viewer import (
+    CameraPose,
+    CameraShot,
+    CameraTimeline,
+    DisplayMode,
+    DisplaySettings,
+)
 from camera_system_app.ui.pages import ResultViewerPage
 from camera_system_app.ui.widgets.viewer_inspector import ViewerInspector
 from camera_system_app.ui.widgets.viewer_toolbar import ViewerToolbar
+from camera_system_app.ui.widgets.viewer_timeline import ViewerTimelineWidget
 
 
 def test_viewer_toolbar_exposes_core_roaming_and_presentation_actions(qapp):
@@ -77,4 +84,26 @@ def test_result_page_contains_studio_shell_and_fits_minimum_window(qapp, tmp_pat
     assert page._inspector.isVisible() is False
     assert page._studio_splitter.minimumSize().width() >= 0
     assert page._toolbar.minimumSizeHint().height() >= 40
+    page.hide()
+
+
+def test_result_page_exposes_model_backed_camera_director_timeline(qapp, tmp_path):
+    page = ResultViewerPage(str(tmp_path / "results"), str(tmp_path / "viewer"))
+    assert isinstance(page._timeline, ViewerTimelineWidget)
+    timeline = CameraTimeline(
+        shots=(
+            CameraShot(
+                "shot-1",
+                "走廊",
+                CameraPose(position=(0.0, 0.0, 5.0)),
+                CameraPose(position=(1.0, 0.0, 5.0)),
+            ),
+        ),
+        fps=24.0,
+    )
+    page.set_timeline(timeline)
+    assert page._timeline.timeline == timeline
+    assert page._timeline.frame_slider.maximum() == 72
+    page.set_current_frame(12)
+    assert page._timeline.frame_slider.value() == 12
     page.hide()

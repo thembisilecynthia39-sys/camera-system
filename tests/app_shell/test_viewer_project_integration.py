@@ -7,6 +7,8 @@ from pathlib import Path
 from PySide6.QtWidgets import QFrame
 
 from camera_system_app.bootstrap import build_context
+from camera_system_app.application.viewer_session import ViewerSession
+from camera_system_app.application.viewer_timeline import sample_timeline
 from camera_system_app.domain.viewer import CameraPose, DisplayMode, DisplaySettings, ViewerProject
 from camera_system_app.infrastructure.viewer_project_store import ViewerProjectStore
 from camera_system_app.ui.main_window import MainWindow
@@ -85,4 +87,40 @@ def test_presentation_mode_hides_chrome_and_is_reversible(qapp, tmp_path, monkey
     assert not binding.is_presentation_mode
     assert sidebar.isVisible()
     assert window.statusBar().isVisible()
+    window.deleteLater()
+
+
+def test_bindings_drive_adapter_from_exact_timeline_frames(qapp, tmp_path, monkeypatch):
+    binding, window = _binding(tmp_path, qapp, monkeypatch)
+
+    class FakeAdapter:
+        def __init__(self):
+            self.poses = []
+
+        def set_camera_pose(self, pose):
+            self.poses.append(pose)
+
+    from camera_system_app.domain.viewer import CameraShot, CameraTimeline
+
+    adapter = FakeAdapter()
+    timeline = CameraTimeline(
+        shots=(
+            CameraShot(
+                "shot",
+                "镜头",
+                CameraPose(position=(0.0, 0.0, 5.0)),
+                CameraPose(position=(2.0, 0.0, 5.0)),
+                duration_seconds=1.0,
+            ),
+        ),
+        fps=2.0,
+    )
+    binding._adapter = adapter
+    binding._session = ViewerSession(adapter, ViewerProject(timeline=timeline))
+    binding._playback.set_timeline(timeline)
+
+    binding._on_frame_selected(1)
+
+    assert adapter.poses[-1] == sample_timeline(timeline, 1)
+    assert binding._playback.current_frame == 1
     window.deleteLater()

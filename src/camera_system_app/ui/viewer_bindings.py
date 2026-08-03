@@ -10,6 +10,11 @@ from PySide6.QtCore import QEvent, QObject, Qt
 from PySide6.QtWidgets import QFileDialog, QMessageBox
 
 from camera_system_app.application.viewer_session import ViewerSession
+from camera_system_app.application.viewer_playback import (
+    ViewerPlayback,
+    ViewerPlaybackError,
+)
+from camera_system_app.application.viewer_timeline import sample_timeline
 from camera_system_app.domain.viewer import (
     DisplayMode,
     QualityPreset,
@@ -38,6 +43,7 @@ class ViewerBindings(QObject):
         self._worker = None
         self._capture_adapter = None
         self._session = None
+        self._playback = ViewerPlayback(parent=self)
         self._project_store = ViewerProjectStore()
         self._project_sidecar = None
         self._presentation_state = None
@@ -60,9 +66,17 @@ class ViewerBindings(QObject):
         window.result_page.render_settings_changed.connect(
             self.set_render_settings
         )
+        window.result_page.timeline_changed.connect(self._on_timeline_changed)
+        window.result_page.frame_selected.connect(self._on_frame_selected)
+        window.result_page.play_requested.connect(self.play)
+        window.result_page.pause_requested.connect(self.pause)
+        window.result_page.stop_requested.connect(self.stop)
         window.result_page.presentation_requested.connect(
             lambda: self.set_presentation_mode(not self.is_presentation_mode)
         )
+        self._playback.frame_changed.connect(self._on_playback_frame)
+        self._playback.playing_changed.connect(window.result_page.set_playing)
+        self._playback.playback_finished.connect(self._on_playback_finished)
         window.navigation.currentRowChanged.connect(self._on_page_changed)
         window.installEventFilter(self)
 
@@ -157,6 +171,51 @@ class ViewerBindings(QObject):
             return
         self._session.set_render_settings(settings)
         self._mark_project_dirty()
+
+    def _on_timeline_changed(self, timeline) -> None:
+        if self._session is None:
+            return
+        self._session.set_timeline(timeline)
+        self._playback.set_timeline(timeline)
+        self._mark_project_dirty()
+
+    def _on_frame_selected(self, frame: int) -> None:
+        if self._session is None:
+            return
+        try:
+            self._playback.set_frame(frame)
+        except ViewerPlaybackError as exc:
+            self._logger.warning("Cannot select viewer frame: %s", exc)
+
+    def _on_playback_frame(self, frame: int) -> None:
+        if self._session is None or self._adapter is None:
+            return
+        try:
+            pose = sample_timeline(self._session.project.timeline, frame)
+        except Exception as exc:
+            self._logger.warning("Cannot sample viewer timeline: %s", exc)
+            return
+        self._adapter.set_camera_pose(pose)
+        self.window.result_page.set_current_frame(frame)
+
+    def play(self) -> None:
+        if self._session is None or not self._session.project.timeline.shots:
+            self.window.statusBar().showMessage("● 请先在 Camera Director 中添加镜头段")
+            self.window.result_page.set_playing(False)
+            return
+        try:
+            self._playback.play()
+        except ViewerPlaybackError as exc:
+            self.window.statusBar().showMessage("● 漫游播放失败：{}".format(exc))
+
+    def pause(self) -> None:
+        self._playback.pause()
+
+    def stop(self) -> None:
+        self._playback.stop()
+
+    def _on_playback_finished(self) -> None:
+        self.window.statusBar().showMessage("● 相机漫游预览完成")
 
     def _mark_project_dirty(self) -> None:
         if self._session is not None:
@@ -324,6 +383,8 @@ class ViewerBindings(QObject):
             )
             self._session = ViewerSession(self._adapter, project)
             self._session.apply_project(project)
+            self._playback.set_timeline(project.timeline)
+            self.window.result_page.set_timeline(project.timeline)
             self.window.result_page._inspector.set_display_settings(project.display)
             self.window.result_page._inspector.set_appearance_settings(project.appearance)
             self.window.result_page._inspector.set_render_settings(project.render)

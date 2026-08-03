@@ -18,6 +18,7 @@ from camera_system_app.ui.widgets import (
     StatusBanner,
     ViewerInspector,
     ViewerToolbar,
+    ViewerTimelineWidget,
 )
 
 
@@ -31,6 +32,8 @@ class ResultViewerPage(BasePage):
     display_settings_changed = Signal(object)
     appearance_settings_changed = Signal(object)
     render_settings_changed = Signal(object)
+    timeline_changed = Signal(object)
+    frame_selected = Signal(int)
     play_requested = Signal()
     pause_requested = Signal()
     stop_requested = Signal()
@@ -126,6 +129,10 @@ class ResultViewerPage(BasePage):
         self._studio_splitter.setStretchFactor(0, 1)
         self._studio_splitter.setStretchFactor(1, 0)
         self._viewer_layout.addWidget(self._studio_splitter, 1)
+        self._timeline = ViewerTimelineWidget()
+        self._timeline.setVisible(False)
+        self._timeline.timeline_changed.connect(self.timeline_changed.emit)
+        self._timeline.frame_selected.connect(self.frame_selected.emit)
         self._empty_state = EmptyState(
             "◇",
             "尚未加载 Gaussian 结果",
@@ -138,6 +145,7 @@ class ResultViewerPage(BasePage):
         self._empty = self._empty_state
         self._viewport_layout.addWidget(self._empty, 1)
         self.layout.addWidget(self._viewer_frame, 1)
+        self.layout.addWidget(self._timeline)
 
     def set_result_available(self, local_path: str) -> None:
         path = Path(local_path).resolve()
@@ -159,6 +167,7 @@ class ResultViewerPage(BasePage):
         self._reset.setEnabled(False)
         self._toolbar.setEnabled(False)
         self._inspector.setVisible(False)
+        self._timeline.setVisible(False)
 
     def set_viewer_widget(self, widget, path: str, gaussian_count: int) -> None:
         if self._viewer_widget is None:
@@ -169,6 +178,7 @@ class ResultViewerPage(BasePage):
         self._viewer_widget.show()
         self._toolbar.setEnabled(True)
         self._inspector.setVisible(True)
+        self._timeline.setVisible(True)
         self._banner.set_status(
             "已加载 {:,} 个 Gaussian：{}".format(gaussian_count, path),
             "success",
@@ -176,6 +186,15 @@ class ResultViewerPage(BasePage):
         self._action.setEnabled(True)
         self._action.setText("重新加载")
         self._reset.setEnabled(True)
+
+    def set_timeline(self, timeline) -> None:
+        self._timeline.set_timeline(timeline)
+
+    def set_current_frame(self, frame: int) -> None:
+        self._timeline.set_current_frame(frame)
+
+    def set_playing(self, playing: bool) -> None:
+        self._toolbar.set_playing(playing)
 
     def show_load_error(self, message: str) -> None:
         self._banner.set_status("结果加载失败：{}".format(message), "warning")
