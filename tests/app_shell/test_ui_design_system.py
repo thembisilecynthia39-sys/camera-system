@@ -124,6 +124,61 @@ def test_viewer_controls_have_dark_scope_object_names(qapp):
     assert inspector.background_color_edit.objectName() == "viewerInspectorInput"
 
 
+def test_viewer_inspector_exposes_explicit_xyz_overlay_toggle(qapp):
+    inspector = ViewerInspector()
+    emitted = []
+    inspector.display_settings_changed.connect(emitted.append)
+
+    assert inspector.show_axis_checkbox.text() == "显示 XYZ 坐标"
+    assert "XYZ" in inspector.show_axis_checkbox.accessibleName()
+    assert "X/Y/Z" in inspector.show_axis_checkbox.toolTip()
+
+    inspector.show_axis_checkbox.setChecked(True)
+    inspector.show_axis_checkbox.setChecked(False)
+
+    assert [settings.show_axis for settings in emitted[-2:]] == [True, False]
+
+
+def test_viewer_inspector_combos_ignore_wheel_without_selection(qapp):
+    inspector = ViewerInspector()
+    combos = (
+        inspector.display_mode_combo,
+        inspector.quality_combo,
+        inspector.sphere_color_mode,
+        inspector.camera_mode_combo,
+        inspector.bookmark_combo,
+        inspector.tone_mapping_combo,
+        inspector.sh_degree_combo,
+        inspector.resolution_preset_combo,
+        inspector.fps_preset_combo,
+        inspector.output_kind,
+    )
+    initial = [combo.currentIndex() for combo in combos]
+
+    for combo in combos:
+        qapp.sendEvent(combo, _wheel_up_event())
+
+    assert [combo.currentIndex() for combo in combos] == initial
+
+
+def test_viewer_inspector_numeric_fields_require_keyboard_entry(qapp):
+    inspector = ViewerInspector()
+    control = inspector.sphere_sigma_multiplier
+    editor = control.lineEdit()
+    control.setValue(3.0)
+
+    qapp.sendEvent(control, _wheel_up_event())
+    qapp.sendEvent(editor, _wheel_up_event())
+    assert control.value() == 3.0
+
+    QTest.mouseClick(editor, Qt.LeftButton)
+    editor.selectAll()
+    QTest.keyClicks(editor, "4.5")
+    QTest.keyClick(editor, Qt.Key_Return)
+
+    assert control.value() == 4.5
+
+
 def test_result_viewer_controls_are_polished_with_dark_palette(qapp, tmp_path):
     previous_stylesheet = qapp.styleSheet()
     stylesheet = application_stylesheet()

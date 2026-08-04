@@ -1,7 +1,7 @@
 """Spin boxes that cannot be changed accidentally by wheel input."""
 
 from PySide6.QtCore import QEvent
-from PySide6.QtWidgets import QDoubleSpinBox, QSpinBox
+from PySide6.QtWidgets import QComboBox, QDoubleSpinBox, QSpinBox
 
 
 class _WheelSafeMixin:
@@ -26,3 +26,10 @@ class SafeSpinBox(_WheelSafeMixin, QSpinBox):
 
 class SafeDoubleSpinBox(_WheelSafeMixin, QDoubleSpinBox):
     """Decimal spin box that rejects wheel changes."""
+
+
+class SafeComboBox(QComboBox):
+    """A combo box that never changes selection from panel scrolling."""
+
+    def wheelEvent(self, event) -> None:
+        event.ignore()

@@ -2,6 +2,7 @@
 
 from camera_system_app.ui.widgets.empty_state import EmptyState
 from camera_system_app.ui.widgets.focus_wheel_spinbox import (
+    SafeComboBox,
     SafeDoubleSpinBox,
     SafeSpinBox,
 )
@@ -20,6 +21,7 @@ from camera_system_app.ui.widgets.viewer_stage import ViewerStage
 
 __all__ = [
     "EmptyState",
+    "SafeComboBox",
     "SafeDoubleSpinBox",
     "SafeSpinBox",
     "MetricCard",
