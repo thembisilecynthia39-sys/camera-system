@@ -10,6 +10,7 @@ import pytest
 import numpy as np
 from PySide6.QtCore import QPoint, QPointF, Qt
 from PySide6.QtTest import QTest
+from PySide6.QtWidgets import QLabel
 
 from camera_system_app.infrastructure.adapters.q3dviewer_adapter import (
     Q3DViewerAdapter,
@@ -212,6 +213,60 @@ def test_result_page_without_file_remains_usable(qapp, tmp_path):
     assert selections == [True]
 
 
+def test_result_page_restores_existing_viewer_after_reload_failure(qapp, tmp_path):
+    page = ResultViewerPage(str(tmp_path / "results"), str(tmp_path / "viewer"))
+    page.resize(900, 640)
+    page.show()
+    viewer = QLabel("old viewer")
+    page.set_viewer_widget(viewer, "old.ply", 1)
+    qapp.processEvents()
+
+    page.show_loading("new.ply")
+    page.show_load_error("invalid Gaussian PLY")
+    qapp.processEvents()
+
+    assert viewer.isVisible()
+    assert page._toolbar.isEnabled()
+    assert page._inspector.isVisible()
+    assert page._reset.isEnabled()
+    page.hide()
+
+
+def test_result_page_keeps_sphere_capability_state_during_reload(qapp, tmp_path):
+    page = ResultViewerPage(str(tmp_path / "results"), str(tmp_path / "viewer"))
+    page.show()
+    page.set_sphere_modes_available(False, "sphere shader unavailable")
+    page.set_viewer_widget(QLabel("old viewer"), "old.ply", 1)
+
+    page.show_loading("new.ply")
+
+    assert page._sphere_available is False
+    sphere_index = page._toolbar.display_mode_combo.findData("sphere_solid")
+    assert page._toolbar.display_mode_combo.model().item(sphere_index).isEnabled() is False
+    page.hide()
+
+
+def test_viewer_worker_includes_source_identity_metadata(qapp, tmp_path):
+    path = tmp_path / "3DGS.ply"
+    _write_minimal_gaussian_ply(path)
+    worker = ViewerLoadWorker(str(path), PROJECT_ROOT)
+    loaded = []
+    worker.loaded.connect(lambda payload, loaded_path: loaded.append((payload, loaded_path)))
+
+    worker.start()
+    assert worker.wait(3000)
+    qapp.processEvents()
+
+    assert len(loaded) == 1
+    payload, loaded_path = loaded[0]
+    data, bounds, source_size, source_sha256 = payload
+    assert data.shape == (1,)
+    assert bounds[0].shape == (3,)
+    assert loaded_path == str(path)
+    assert source_size == path.stat().st_size
+    assert len(source_sha256) == 64
+
+
 def test_camera_pitch_is_not_clipped_and_supports_full_orbit(qapp):
     prepare_q3dviewer(PROJECT_ROOT)
     from q3dviewer.base_glwidget import BaseGLWidget
@@ -303,6 +358,55 @@ def test_gaussian_interaction_preview_suspends_sort_until_release():
     assert not item.interactive_preview
     assert not item.sort_suspended
     assert np.array_equal(item.prev_Rz, previous_direction)
+
+
+def test_large_gaussian_models_use_cpu_depth_sort_fallback(monkeypatch):
+    prepare_q3dviewer(PROJECT_ROOT)
+    import q3dviewer.custom_items.gaussian_item as gaussian_module
+
+    item = gaussian_module.GaussianItem(
+        sort_enabled=True,
+        sort_backend="opengl",
+        max_bitonic_gaussians=2,
+    )
+    item.gs_data = np.zeros((3, 14), dtype=np.float32)
+    item.gs_data[:, 2] = np.array([2.0, 0.0, 1.0], dtype=np.float32)
+    item.view_matrix = np.eye(4, dtype=np.float32)
+    item.prev_Rz = np.array([np.inf, np.inf, np.inf], dtype=np.float32)
+    item.num_sort = 4
+    item.ssbo_gi = 17
+    uploaded = []
+
+    monkeypatch.setattr(gaussian_module, "glBindBuffer", lambda *args: None)
+    monkeypatch.setattr(
+        gaussian_module,
+        "glBufferData",
+        lambda _target, _size, values, _usage: uploaded.append(np.asarray(values).copy()),
+    )
+    monkeypatch.setattr(gaussian_module, "glBindBufferBase", lambda *args: None)
+
+    item.try_sort()
+
+    assert np.array_equal(uploaded[-1], np.array([1, 2, 0, 3], dtype=np.uint32))
+    assert item.sort_skipped_large_model is False
+    assert item.sort_fallback_used is True
+
+
+def test_depth_picker_clips_neighborhood_at_widget_edges(monkeypatch):
+    prepare_q3dviewer(PROJECT_ROOT)
+    import q3dviewer.base_glwidget as base_glwidget
+
+    depth = np.zeros((5, 5), dtype=np.float32)
+    offset = np.array(
+        [(dx, dy) for dy in range(-3, 4) for dx in range(-3, 4)],
+        dtype=np.int64,
+    )
+
+    samples = base_glwidget.BaseGLWidget._sample_depth_neighborhood(
+        depth, 4, 4, offset
+    )
+
+    assert samples.size == 16
 
 
 def test_interaction_preview_keeps_full_sh_storage_stride(monkeypatch):

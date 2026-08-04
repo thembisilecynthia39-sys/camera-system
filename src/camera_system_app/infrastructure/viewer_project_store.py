@@ -46,7 +46,11 @@ class ViewerProjectStore:
         return Path(source_path).with_suffix(".splatview.json")
 
     @staticmethod
-    def sha256_file(path: PathLike, chunk_size: int = 1024 * 1024) -> str:
+    def sha256_file(
+        path: PathLike,
+        chunk_size: int = 1024 * 1024,
+        cancel_check=None,
+    ) -> str:
         """Hash a source file in bounded memory."""
 
         if chunk_size <= 0:
@@ -54,6 +58,8 @@ class ViewerProjectStore:
         digest = hashlib.sha256()
         with Path(path).open("rb") as handle:
             while True:
+                if cancel_check is not None and cancel_check():
+                    raise InterruptedError("viewer source hashing cancelled")
                 chunk = handle.read(chunk_size)
                 if not chunk:
                     break
@@ -108,6 +114,7 @@ class ViewerProjectStore:
         *,
         source_path: Optional[PathLike] = None,
         allow_source_mismatch: bool = False,
+        source_identity=None,
     ) -> ViewerProject:
         """Load a project and optionally verify it against the current source."""
 
@@ -137,8 +144,21 @@ class ViewerProjectStore:
             raise ViewerProjectSourceMismatchError(
                 "源文件不存在，无法验证查看器项目：{}".format(source)
             )
-        actual_size = source.stat().st_size
-        actual_sha256 = self.sha256_file(source)
+        if source_identity is None:
+            actual_size = source.stat().st_size
+            actual_sha256 = self.sha256_file(source)
+        else:
+            try:
+                actual_size = int(source_identity[0])
+                actual_sha256 = str(source_identity[1]).lower()
+            except (IndexError, TypeError, ValueError):
+                raise ViewerProjectSourceMismatchError(
+                    "源文件身份信息无效，无法验证查看器项目：{}".format(source)
+                )
+            if actual_size < 0 or len(actual_sha256) != 64:
+                raise ViewerProjectSourceMismatchError(
+                    "源文件身份信息无效，无法验证查看器项目：{}".format(source)
+                )
         matches = (
             project.source_size == actual_size
             and project.source_sha256.lower() == actual_sha256

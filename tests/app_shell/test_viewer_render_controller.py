@@ -19,7 +19,10 @@ from camera_system_app.domain.viewer import (
     RenderSettings,
     ViewerProject,
 )
-from camera_system_app.ui.viewer_render_controller import ViewerRenderController
+from camera_system_app.ui.viewer_render_controller import (
+    ViewerRenderController,
+    ViewerRenderControllerError,
+)
 from camera_system_app.ui.widgets.viewer_render_dialog import ViewerRenderDialog
 from camera_system_app.infrastructure.viewer_encoder import BoundedFrameSink, EncoderState
 
@@ -216,6 +219,123 @@ def test_render_controller_cancel_is_terminal_and_does_not_publish(qapp, tmp_pat
     assert not controller.is_running
     assert cancelled == [True]
     assert not output.exists()
+
+
+def test_render_controller_aborts_encoder_when_setup_fails(qapp, tmp_path):
+    class SetupFailAdapter:
+        appearance_settings = None
+
+        def set_display_settings(self, _settings):
+            raise RuntimeError("display setup failed")
+
+    class TrackingEncoder:
+        instance = None
+
+        def __init__(self, _config):
+            self._state = EncoderState.CREATED
+            self.error = None
+            self.abort_called = False
+            TrackingEncoder.instance = self
+
+        @property
+        def state(self):
+            return self._state
+
+        def start(self):
+            self._state = EncoderState.RUNNING
+
+        def abort(self):
+            self.abort_called = True
+            self._state = EncoderState.ABORTED
+
+    controller = ViewerRenderController(
+        SetupFailAdapter(),
+        encoder_factory=TrackingEncoder,
+    )
+
+    with pytest.raises(ViewerRenderControllerError, match="display setup failed"):
+        controller.start(RenderPlan.from_project(_project(), tmp_path / "failed"))
+
+    assert TrackingEncoder.instance is not None
+    assert TrackingEncoder.instance.abort_called
+    assert TrackingEncoder.instance.state is EncoderState.ABORTED
+
+
+def test_transparent_render_temporarily_sets_clear_alpha(qapp, tmp_path):
+    class AlphaAdapter(FakeRenderAdapter):
+        def __init__(self):
+            super().__init__()
+            self.background_alpha = 1.0
+            self.alpha_history = []
+
+        def set_background_alpha(self, alpha):
+            self.background_alpha = float(alpha)
+            self.alpha_history.append(self.background_alpha)
+
+    project = ViewerProject(
+        camera=CameraPose(position=(0.0, 0.0, 5.0)),
+        render=RenderSettings(
+            width=3,
+            height=2,
+            output_kind=OutputKind.PNG,
+            transparent_background=True,
+        ),
+    )
+    adapter = AlphaAdapter()
+    controller = ViewerRenderController(adapter)
+
+    controller.start(RenderPlan.from_project(project, tmp_path / "transparent.png"))
+    deadline = time.monotonic() + 5.0
+    while controller.is_running and time.monotonic() < deadline:
+        qapp.processEvents()
+        time.sleep(0.005)
+
+    assert adapter.alpha_history[0] == pytest.approx(0.0)
+    assert adapter.alpha_history[-1] == pytest.approx(1.0)
+
+
+def test_render_controller_unpremultiplies_readback_before_transparent_png(
+    qapp, tmp_path
+):
+    class PremultipliedAdapter(FakeRenderAdapter):
+        def capture_frame(self, width=None, height=None, camera_pose=None):
+            frame = np.zeros((height, width, 4), dtype=np.uint8)
+            frame[:, :, :3] = (64, 32, 16)
+            frame[:, :, 3] = 128
+            return frame
+
+    project = ViewerProject(
+        camera=CameraPose(position=(0.0, 0.0, 5.0)),
+        appearance=AppearanceSettings(
+            tone_mapping="none",
+            exposure=0.0,
+            contrast=1.0,
+            saturation=1.0,
+            vignette=0.0,
+            sharpening=0.0,
+        ),
+        render=RenderSettings(
+            width=3,
+            height=2,
+            output_kind=OutputKind.PNG,
+            transparent_background=True,
+        ),
+    )
+    output = tmp_path / "premultiplied.png"
+    controller = ViewerRenderController(PremultipliedAdapter())
+
+    controller.start(RenderPlan.from_project(project, output))
+    deadline = time.monotonic() + 5.0
+    while controller.is_running and time.monotonic() < deadline:
+        qapp.processEvents()
+        time.sleep(0.005)
+
+    assert not controller.is_running
+    from PIL import Image
+
+    with Image.open(output) as image:
+        assert image.mode == "RGBA"
+        assert image.getpixel((0, 0)) == (128, 64, 32, 128)
 
 
 def test_render_dialog_exposes_frozen_output_summary_and_cancel(qapp, tmp_path):

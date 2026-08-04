@@ -118,7 +118,9 @@ class GaussianSpherePass:
         glDisable(GL_CULL_FACE)
         glEnable(GL_BLEND)
         glBlendEquation(GL_FUNC_ADD)
-        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
+        # gau_sphere_frag outputs premultiplied RGB (color * alpha), matching
+        # the standard Gaussian pass. Avoid multiplying alpha into RGB twice.
+        glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA)
         glEnable(GL_DEPTH_TEST)
         glDepthMask(GL_TRUE if style_id == self.STYLES["solid"] else GL_FALSE)
         glUseProgram(self.program)

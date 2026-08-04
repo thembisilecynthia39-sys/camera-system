@@ -325,6 +325,20 @@ class BaseGLWidget(QOpenGLWidget):
     def _schedule_interaction_finish(self):
         self._interaction_timer.start()
 
+    def finish_interaction(self, notify=True):
+        """End a programmatic interaction without waiting for the debounce timer."""
+
+        self._interaction_timer.stop()
+        self.active_keys.clear()
+        self._mouse_interacting = False
+        self._drag_started = False
+        self._drag_start_pos = None
+        was_interacting = self._interacting
+        self._interacting = False
+        if was_interacting and notify:
+            self.interaction_finished.emit()
+        return was_interacting
+
     def _finish_interaction(self):
         if self._mouse_interacting or self.active_keys:
             return
@@ -556,6 +570,43 @@ class BaseGLWidget(QOpenGLWidget):
         self.need_recalc_view = True
         self.update()
 
+    def orbit(self, delta_yaw=0.0, delta_pitch=0.0):
+        """Rotate around the scene center using stable yaw/pitch controls.
+
+        The viewer's native Euler representation uses ``euler[2]`` for the
+        horizontal heading and ``euler[0]`` for the vertical orbit angle.
+        Keeping this mapping in one public method lets the application layer
+        drive keyboard and automatic panorama navigation without duplicating
+        camera math.
+        """
+
+        try:
+            delta_yaw = float(delta_yaw)
+            delta_pitch = float(delta_pitch)
+        except (TypeError, ValueError):
+            raise ValueError("orbit deltas must be numeric")
+        if not isfinite(delta_yaw) or not isfinite(delta_pitch):
+            raise ValueError("orbit deltas must be finite")
+        if delta_yaw == 0.0 and delta_pitch == 0.0:
+            return self.get_camera_state()
+
+        self._begin_interaction()
+        new_euler = self.euler.copy()
+        new_euler[2] = (new_euler[2] + delta_yaw + np.pi) % (2 * np.pi) - np.pi
+        # Avoid flipping the camera at the poles while still allowing a full
+        # horizontal 360-degree panorama.
+        pitch_limit = np.pi / 2.0 - 1e-3
+        new_euler[0] = np.clip(
+            new_euler[0] + delta_pitch,
+            -pitch_limit,
+            pitch_limit,
+        )
+        self.euler = new_euler
+        self.need_recalc_view = True
+        self.update()
+        self._schedule_interaction_finish()
+        return self.get_camera_state()
+
     def translate(self, trans):
         self.center += trans
         self.need_recalc_view = True
@@ -670,6 +721,24 @@ class BaseGLWidget(QOpenGLWidget):
         world_p /= world_p[3]
         return world_p[:3]
 
+    @staticmethod
+    def _sample_depth_neighborhood(depth_buffer, x, y, offset):
+        """Return only in-bounds depth samples around one pixel."""
+        height, width = depth_buffer.shape
+        sample_x = x + offset[:, 0]
+        sample_y = y + offset[:, 1]
+        valid_samples = (
+            (sample_x >= 0)
+            & (sample_x < width)
+            & (sample_y >= 0)
+            & (sample_y < height)
+        )
+        if not np.any(valid_samples):
+            return np.empty(0, dtype=depth_buffer.dtype)
+        return depth_buffer[
+            sample_y[valid_samples], sample_x[valid_samples]
+        ]
+
     def get_point(self, x0, y0):
         """
         Get the 3D point in world coordinates corresponding to the given
@@ -683,6 +752,8 @@ class BaseGLWidget(QOpenGLWidget):
         pixel_ratio = self.devicePixelRatioF()
         x = int(x0 * pixel_ratio)
         y = int(y0 * pixel_ratio)
+        if not (0 <= x < width and 0 <= y < height):
+            return None
 
         # Read entire depth buffer (raw values [0,1])
         depth_buffer = glReadPixels(
@@ -697,8 +768,11 @@ class BaseGLWidget(QOpenGLWidget):
         # depth_image_uint16 = (depth_image * 1000).astype(np.uint16)
         # imageio.imwrite('/home/liu/depth_debug.png', depth_image_uint16)
 
-        depth_values = depth_buffer[y +
-                                    self.offset[:, 1], x + self.offset[:, 0]]
+        depth_values = self._sample_depth_neighborhood(
+            depth_buffer, x, y, self.offset
+        )
+        if depth_values.size == 0:
+            return None
         depth_valid_mask = (depth_values > 0) & (depth_values < 1)
         if not np.any(depth_valid_mask):
             return None

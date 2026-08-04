@@ -17,7 +17,6 @@ from camera_system_app.ui.widgets import (
     ViewerInspector,
     ViewerStage,
     ViewerToolbar,
-    ViewerTimelineWidget,
 )
 
 
@@ -34,8 +33,6 @@ class ResultViewerPage(BasePage):
     render_settings_changed = Signal(object)
     save_requested = Signal()
     save_as_requested = Signal()
-    timeline_changed = Signal(object)
-    frame_selected = Signal(int)
     camera_mode_changed = Signal(str)
     fly_speed_changed = Signal(float)
     fov_changed = Signal(float)
@@ -43,9 +40,7 @@ class ResultViewerPage(BasePage):
     bookmark_add_requested = Signal(str)
     bookmark_load_requested = Signal(str)
     bookmark_delete_requested = Signal(str)
-    play_requested = Signal()
-    pause_requested = Signal()
-    stop_requested = Signal()
+    panorama_requested = Signal(bool)
     presentation_requested = Signal()
     render_requested = Signal()
 
@@ -61,6 +56,7 @@ class ResultViewerPage(BasePage):
         self._local_path = None
         self.result_root = Path(result_root).resolve()
         self._viewer_widget = None
+        self._loading_state = None
         self._sphere_available = True
         self._sphere_error = ""
         self._banner = StatusBanner("当前没有已完成的本地重建结果。")
@@ -88,13 +84,10 @@ class ResultViewerPage(BasePage):
         self._toolbar.display_mode_changed.connect(self.display_mode_requested.emit)
         self._toolbar.quality_changed.connect(self.quality_requested.emit)
         self._toolbar.view_preset_changed.connect(self.view_preset_requested.emit)
-        self._toolbar.play_requested.connect(self.play_requested.emit)
-        self._toolbar.pause_requested.connect(self.pause_requested.emit)
-        self._toolbar.stop_requested.connect(self.stop_requested.emit)
+        self._toolbar.panorama_requested.connect(self.panorama_requested.emit)
         self._toolbar.presentation_requested.connect(self.presentation_requested.emit)
         self._toolbar.render_requested.connect(self.render_requested.emit)
         self._toolbar.inspector_requested.connect(self._toggle_inspector)
-        self._toolbar.timeline_requested.connect(self._toggle_timeline)
         self._viewer_layout.addWidget(self._toolbar)
 
         self._viewport_frame = QFrame()
@@ -133,10 +126,6 @@ class ResultViewerPage(BasePage):
         )
         self._viewer_stage = ViewerStage(self._viewport_frame, self._inspector)
         self._viewer_layout.addWidget(self._viewer_stage, 1)
-        self._timeline = ViewerTimelineWidget()
-        self._timeline.setVisible(False)
-        self._timeline.timeline_changed.connect(self.timeline_changed.emit)
-        self._timeline.frame_selected.connect(self.frame_selected.emit)
         self._empty_state = EmptyState(
             "◇",
             "尚未加载 Gaussian 结果",
@@ -156,7 +145,6 @@ class ResultViewerPage(BasePage):
         self.layout.setSpacing(0)
         self.layout.addWidget(self._banner)
         self.layout.addWidget(self._viewer_frame, 1)
-        self.layout.addWidget(self._timeline)
 
     def set_result_available(self, local_path: str) -> None:
         path = Path(local_path).resolve()
@@ -172,15 +160,24 @@ class ResultViewerPage(BasePage):
             self.open_local_result_requested.emit(str(self._local_path))
 
     def show_loading(self, path: str) -> None:
-        self.set_sphere_modes_available(True)
+        self._loading_state = {
+            "has_viewer": self._viewer_widget is not None,
+            "viewer_visible": bool(self._viewer_widget and self._viewer_widget.isVisible()),
+            "toolbar_enabled": self._toolbar.isEnabled(),
+            "inspector_visible": self._inspector.isVisible(),
+            "reset_enabled": self._reset.isEnabled(),
+        }
+        if self._viewer_widget is None:
+            self.set_sphere_modes_available(True)
         self._set_banner_status("正在后台解析 PLY：{}".format(path), "success")
         self._action.setEnabled(False)
-        self._reset.setEnabled(False)
-        self._toolbar.setEnabled(False)
-        self._inspector.setVisible(False)
-        self._timeline.setVisible(False)
+        if self._viewer_widget is None:
+            self._reset.setEnabled(False)
+            self._toolbar.setEnabled(False)
+            self._inspector.setVisible(False)
 
     def set_viewer_widget(self, widget, path: str, gaussian_count: int) -> None:
+        self._loading_state = None
         if self._viewer_widget is None:
             self._viewport_layout.removeWidget(self._empty)
             self._empty.hide()
@@ -189,7 +186,6 @@ class ResultViewerPage(BasePage):
         self._viewer_widget.show()
         self._toolbar.setEnabled(True)
         self._inspector.setVisible(True)
-        self._timeline.setVisible(True)
         self._viewer_stage.relayout()
         self._update_viewport_size()
         if self._sphere_available:
@@ -206,14 +202,7 @@ class ResultViewerPage(BasePage):
         self._action.setText("重新加载")
         self._reset.setEnabled(True)
 
-    def set_timeline(self, timeline) -> None:
-        self._timeline.set_timeline(timeline)
-
-    def set_current_frame(self, frame: int) -> None:
-        self._timeline.set_current_frame(frame)
-
     def set_current_camera_pose(self, pose) -> None:
-        self._timeline.set_current_pose(pose)
         if pose is not None:
             self._camera_info_label.setText(
                 "相机 ({:.3f}, {:.3f}, {:.3f})  ·  目标 ({:.3f}, {:.3f}, {:.3f})  ·  FOV {:.1f}°".format(
@@ -225,6 +214,12 @@ class ResultViewerPage(BasePage):
 
     def set_camera_info_visible(self, visible: bool) -> None:
         self._camera_info_label.setVisible(bool(visible))
+
+    @property
+    def camera_info_visible(self) -> bool:
+        """Return the label's explicit visibility, independent of page stacking."""
+
+        return not self._camera_info_label.isHidden()
 
     def set_camera_pose(self, pose) -> None:
         self._inspector.set_camera_pose(pose)
@@ -253,11 +248,14 @@ class ResultViewerPage(BasePage):
         elif self._viewer_widget is not None:
             self._banner.setVisible(False)
 
-    def set_playing(self, playing: bool) -> None:
-        self._toolbar.set_playing(playing)
+    def set_panorama_playing(self, playing: bool) -> None:
+        self._toolbar.set_panorama_playing(playing)
 
     def set_project_dirty(self, dirty: bool) -> None:
         self._toolbar.set_project_dirty(dirty)
+
+    def set_presentation_mode(self, enabled: bool) -> None:
+        self._toolbar.set_presentation_mode(enabled)
 
     def set_rendering(self, rendering: bool) -> None:
         """Freeze scene-editing controls while a final frame is being rendered."""
@@ -268,7 +266,6 @@ class ResultViewerPage(BasePage):
         self._reset.setEnabled(not rendering and self._viewer_widget is not None)
         self._toolbar.setEnabled(not rendering and self._viewer_widget is not None)
         self._inspector.setEnabled(not rendering)
-        self._timeline.setEnabled(not rendering)
 
     def _toggle_inspector(self) -> None:
         if self._viewer_widget is None:
@@ -278,9 +275,6 @@ class ResultViewerPage(BasePage):
     def _on_inspector_collapsed(self, collapsed: bool) -> None:
         self._viewer_stage.relayout()
         self._toolbar.set_inspector_expanded(not collapsed)
-
-    def _toggle_timeline(self) -> None:
-        self._timeline.setVisible(not self._timeline.isVisible())
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
@@ -297,7 +291,16 @@ class ResultViewerPage(BasePage):
     def show_load_error(self, message: str) -> None:
         self._set_banner_status("结果加载失败：{}".format(message), "warning")
         self._action.setEnabled(bool(self._local_path and self._local_path.is_file()))
-        self._reset.setEnabled(self._viewer_widget is not None)
+        state = self._loading_state
+        if state is not None and state["has_viewer"]:
+            if self._viewer_widget is not None:
+                self._viewer_widget.setVisible(state["viewer_visible"])
+            self._toolbar.setEnabled(state["toolbar_enabled"])
+            self._inspector.setVisible(state["inspector_visible"])
+            self._reset.setEnabled(state["reset_enabled"])
+        else:
+            self._reset.setEnabled(self._viewer_widget is not None)
+        self._loading_state = None
 
     def _set_banner_status(self, text: str, status: str) -> None:
         self._banner.set_status(text, status)

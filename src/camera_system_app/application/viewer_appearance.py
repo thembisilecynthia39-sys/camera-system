@@ -11,6 +11,34 @@ class AppearanceProcessingError(ValueError):
     """The readback buffer or appearance settings are not processable."""
 
 
+def unpremultiply_rgba(frame) -> np.ndarray:
+    """Convert an 8-bit premultiplied RGBA readback to straight alpha."""
+
+    source = np.asarray(frame)
+    if source.ndim != 3 or source.shape[2] not in (3, 4):
+        raise AppearanceProcessingError(
+            "premultiplied readback must be an RGB or RGBA image"
+        )
+    if source.shape[2] == 3:
+        return source
+    if source.dtype != np.uint8:
+        source = np.clip(source, 0.0, 255.0).astype(np.uint8)
+
+    alpha = source[:, :, 3:4].astype(np.float32)
+    rgb = source[:, :, :3].astype(np.float32)
+    straight = np.zeros_like(rgb)
+    visible = alpha > 0.0
+    straight[visible.repeat(3, axis=2)] = (
+        rgb[visible.repeat(3, axis=2)]
+        * 255.0
+        / alpha.repeat(3, axis=2)[visible.repeat(3, axis=2)]
+    )
+    result = np.empty_like(source)
+    result[:, :, :3] = np.clip(np.rint(straight), 0.0, 255.0).astype(np.uint8)
+    result[:, :, 3:] = source[:, :, 3:]
+    return result
+
+
 def apply_appearance(frame, settings: AppearanceSettings) -> np.ndarray:
     """Apply a bounded look without mutating the renderer readback buffer."""
 
@@ -69,4 +97,4 @@ def apply_appearance(frame, settings: AppearanceSettings) -> np.ndarray:
     return np.concatenate((rgb, alpha), axis=2)
 
 
-__all__ = ["AppearanceProcessingError", "apply_appearance"]
+__all__ = ["AppearanceProcessingError", "apply_appearance", "unpremultiply_rgba"]

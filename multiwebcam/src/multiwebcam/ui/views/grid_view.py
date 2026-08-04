@@ -176,7 +176,10 @@ class GridView(QWidget):
 
         self._panel_stack = QStackedWidget()
         self._panel_stack.setObjectName("sidePanelStack")
-        self._panel_stack.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Ignored)
+        # Let narrow sidebars shrink horizontally, but preserve the current
+        # page's natural height so the scroll area can scroll instead of
+        # compressing status rows below their readable size.
+        self._panel_stack.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
 
         self._panel_scroll = QScrollArea()
         self._panel_scroll.setObjectName("sidePanelScroll")
@@ -238,6 +241,7 @@ class GridView(QWidget):
 
         overview_page = self._create_panel_page()
         overview_layout = overview_page.layout()
+        overview_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
 
         self._status_label = QLabel("系统就绪")
         self._device_value = QLabel("0 路摄像头")

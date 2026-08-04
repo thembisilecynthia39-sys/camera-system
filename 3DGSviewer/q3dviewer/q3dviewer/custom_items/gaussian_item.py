@@ -50,6 +50,7 @@ class GaussianItem(BaseItem):
         self._sort_query = 0
         self._sort_query_pending = False
         self.sort_skipped_large_model = False
+        self.sort_fallback_used = False
         self.sort_backend = 'opengl'
         self.cuda_pw = None
         self.sh_degree = 3
@@ -334,14 +335,18 @@ class GaussianItem(BaseItem):
                 and self.max_bitonic_gaussians > 0
                 and self.gs_data.shape[0] > self.max_bitonic_gaussians
             ):
-                # Bitonic work grows as O(N log²N) and can monopolize an
-                # integrated Jetson GPU for multi-million-splat models.
-                # Preserve responsiveness until a radix/tile sorter is used.
-                self.sort_skipped_large_model = True
+                # Bitonic work grows as O(N log²N). Keep the correct
+                # back-to-front order for large models with a CPU fallback;
+                # interaction preview already suppresses this path while the
+                # camera is moving.
+                self.cpu_sort()
+                self.sort_skipped_large_model = False
+                self.sort_fallback_used = True
                 self.prev_Rz = Rz.copy()
                 self._last_sort_time = now
                 return
             self.sort_skipped_large_model = False
+            self.sort_fallback_used = False
             # import torch
             # torch.cuda.synchronize()
             # start = time.time()
@@ -369,6 +374,29 @@ class GaussianItem(BaseItem):
         # try_sort() then sorts only if orbiting changed the view direction.
         # Panning and plain clicks do not alter depth order and must not launch
         # the very expensive full-model bitonic sort.
+
+    def cpu_sort(self):
+        """Sort Gaussian indices on CPU when the GPU bitonic limit is exceeded."""
+        count = int(self.gs_data.shape[0])
+        if count <= 0:
+            return np.empty(0, dtype=np.uint32)
+        depth = np.asarray(self.gs_data[:, :3], dtype=np.float32) @ np.asarray(
+            self.view_matrix[2, :3], dtype=np.float32
+        )
+        order = np.argsort(depth, kind="stable").astype(np.uint32)
+        padded_count = max(int(self.num_sort), count)
+        padded = np.arange(padded_count, dtype=np.uint32)
+        padded[:count] = order
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, self.ssbo_gi)
+        glBufferData(
+            GL_SHADER_STORAGE_BUFFER,
+            padded.nbytes,
+            padded,
+            GL_STATIC_DRAW,
+        )
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, self.ssbo_gi)
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0)
+        return padded
 
     def openg_sort(self):
         if self.sort_program is None:
@@ -511,6 +539,7 @@ class GaussianItem(BaseItem):
             'sort_dispatches': int(self.last_sort_dispatches),
             'sort_gpu_ms': self.last_sort_gpu_ms,
             'sort_skipped_large_model': self.sort_skipped_large_model,
+            'sort_fallback_used': self.sort_fallback_used,
             'estimated_gpu_bytes': int(
                 self.gs_data.nbytes
                 + self.gpu_data.num_sort * 8

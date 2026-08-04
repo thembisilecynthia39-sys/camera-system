@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 import sys
-from math import pi
+from math import isfinite, pi
 from pathlib import Path
 from typing import Any, Callable
 
@@ -121,7 +121,10 @@ class Q3DViewerAdapter(QObject):
         self._default_center = np.zeros(3, dtype=np.float64)
         self._default_distance = 4.0
         self._default_euler = np.array([pi / 3, 0.0, pi / 4], dtype=np.float64)
+        self._bounds = None
+        self._display_settings = DisplaySettings()
         self._appearance_settings = AppearanceSettings()
+        self._background_alpha = 1.0
         self._timer = QTimer(self)
         self._timer.setInterval(33)
         self._timer.timeout.connect(self.widget.update)
@@ -144,6 +147,17 @@ class Q3DViewerAdapter(QObject):
             hi = np.percentile(points, 99, axis=0)
         else:
             lo, hi = bounds
+        lo = np.asarray(lo, dtype=np.float64)
+        hi = np.asarray(hi, dtype=np.float64)
+        if (
+            lo.shape != (3,)
+            or hi.shape != (3,)
+            or not np.isfinite(lo).all()
+            or not np.isfinite(hi).all()
+            or np.any(hi < lo)
+        ):
+            raise ValueError("Gaussian bounds must be finite three-dimensional values")
+        self._bounds = (lo.copy(), hi.copy())
         self._default_center = (lo + hi) * 0.5
         radius = float(np.linalg.norm(hi - lo) * 0.5)
         self._default_distance = max(radius * 2.5, 1.0)
@@ -229,10 +243,11 @@ class Q3DViewerAdapter(QObject):
         )
         self.widget.set_color(
             np.asarray(
-                (*settings.background_color, 1.0),
+                (*settings.background_color, self._background_alpha),
                 dtype=np.float32,
             )
         )
+        self._display_settings = settings
         self.widget.update()
 
     def set_quality(self, quality: str) -> str:
@@ -246,25 +261,104 @@ class Q3DViewerAdapter(QObject):
         self.widget.set_fly_speed(float(speed))
 
     @property
+    def background_alpha(self) -> float:
+        return self._background_alpha
+
+    def set_background_alpha(self, alpha: float) -> None:
+        try:
+            value = float(alpha)
+        except (TypeError, ValueError):
+            raise ValueError("background alpha must be a number")
+        if not isfinite(value) or not 0.0 <= value <= 1.0:
+            raise ValueError("background alpha must be between 0 and 1")
+        self._background_alpha = value
+        color = np.asarray(self.widget.color, dtype=np.float32).copy()
+        color[3] = value
+        self.widget.set_color(color)
+
+    @property
     def appearance_settings(self) -> AppearanceSettings:
         return self._appearance_settings
 
     def set_appearance_settings(self, settings: AppearanceSettings) -> None:
         if not isinstance(settings, AppearanceSettings):
             raise ValueError("appearance settings must be an AppearanceSettings value")
-        self._appearance_settings = settings
         set_sh_degree = getattr(self.item, "set_sh_degree", None)
         if callable(set_sh_degree):
             set_sh_degree(settings.sh_degree)
         set_appearance = getattr(self.item, "set_appearance_settings", None)
         if callable(set_appearance):
             set_appearance(settings)
+        self._appearance_settings = settings
+
+    def snapshot_scene(self) -> dict[str, Any]:
+        """Capture the mutable renderer state before a scene replacement."""
+
+        return {
+            "gaussians": (
+                None
+                if self.item.gpu_data.count == 0
+                else self.item.gs_data
+            ),
+            "bounds": (
+                None
+                if self._bounds is None
+                else tuple(np.array(value, copy=True) for value in self._bounds)
+            ),
+            "camera_state": dict(self.get_camera_state()),
+            "display_settings": self._display_settings,
+            "appearance_settings": self._appearance_settings,
+            "background_alpha": self._background_alpha,
+        }
+
+    def restore_scene(self, snapshot: dict[str, Any]) -> None:
+        """Restore a scene snapshot after a failed GUI-thread replacement."""
+
+        if not isinstance(snapshot, dict):
+            raise ValueError("scene snapshot must be a dictionary")
+        gaussians = snapshot.get("gaussians")
+        if gaussians is not None:
+            self.set_gaussians(gaussians, bounds=snapshot.get("bounds"))
+        self.set_display_settings(snapshot["display_settings"])
+        self.set_appearance_settings(snapshot["appearance_settings"])
+        self.set_background_alpha(snapshot["background_alpha"])
+        self.set_camera_state(snapshot["camera_state"])
+        self.widget.update()
 
     def get_camera_state(self) -> dict[str, Any]:
         return self.widget.get_camera_state()
 
     def set_camera_state(self, state: dict[str, Any]) -> None:
         self.widget.set_camera_state(state)
+
+    @staticmethod
+    def _camera_state_for_pose(pose: CameraPose) -> dict[str, Any]:
+        from q3dviewer.utils.maths import matrix_to_euler, quaternion_to_matrix
+
+        position = np.asarray(pose.position, dtype=np.float64)
+        target = np.asarray(pose.target, dtype=np.float64)
+        offset = position - target
+        distance = float(np.linalg.norm(offset))
+        if not isfinite(distance) or distance <= 1e-8:
+            raise ValueError("camera position and target must be different")
+
+        direction = offset / distance
+        rotation = quaternion_to_matrix(pose.rotation_xyzw)
+        if not np.allclose(rotation[:, 2], direction, rtol=1e-6, atol=1e-6):
+            world_up = np.array([0.0, 1.0, 0.0], dtype=np.float64)
+            if abs(float(np.dot(world_up, direction))) > 0.98:
+                world_up = np.array([0.0, 0.0, 1.0], dtype=np.float64)
+            right = np.cross(world_up, direction)
+            right /= np.linalg.norm(right)
+            up = np.cross(direction, right)
+            rotation = np.column_stack((right, up, direction))
+
+        return {
+            "center": target.tolist(),
+            "euler": matrix_to_euler(rotation).tolist(),
+            "distance": distance,
+            "fov_degrees": pose.fov_degrees,
+        }
 
     def get_camera_pose(self) -> CameraPose:
         from q3dviewer.utils.maths import euler_to_matrix, matrix_to_quaternion
@@ -280,25 +374,24 @@ class Q3DViewerAdapter(QObject):
             fov_degrees=state["fov_degrees"],
         )
 
-    def set_camera_pose(self, pose: CameraPose) -> None:
+    def set_camera_pose(self, pose: CameraPose) -> CameraPose:
         if not isinstance(pose, CameraPose):
             raise ValueError("camera pose must be a CameraPose value")
-        from q3dviewer.utils.maths import matrix_to_euler, quaternion_to_matrix
+        self.widget.set_camera_state(self._camera_state_for_pose(pose))
+        return self.get_camera_pose()
 
-        position = np.asarray(pose.position, dtype=np.float64)
-        target = np.asarray(pose.target, dtype=np.float64)
-        distance = float(np.linalg.norm(position - target))
-        if distance <= 1e-8:
-            raise ValueError("camera position and target must be different")
-        rotation = quaternion_to_matrix(pose.rotation_xyzw)
-        self.widget.set_camera_state(
-            {
-                "center": target.tolist(),
-                "euler": matrix_to_euler(rotation).tolist(),
-                "distance": distance,
-                "fov_degrees": pose.fov_degrees,
-            }
-        )
+    def orbit(self, delta_yaw=0.0, delta_pitch=0.0) -> CameraPose:
+        """Apply one scene-centered orbit step and return the canonical pose."""
+
+        self.widget.orbit(delta_yaw=delta_yaw, delta_pitch=delta_pitch)
+        return self.get_camera_pose()
+
+    def end_interaction(self) -> bool:
+        """Immediately restore full-quality rendering after scripted orbiting."""
+
+        was_interacting = self.widget.finish_interaction(notify=False)
+        self._end_interaction()
+        return bool(was_interacting)
 
     def capture_frame(self, width=None, height=None, camera_pose=None):
         if width is None and height is None and camera_pose is None:
@@ -309,21 +402,7 @@ class Q3DViewerAdapter(QObject):
         if camera_pose is not None:
             if not isinstance(camera_pose, CameraPose):
                 raise ValueError("camera_pose must be a CameraPose value")
-            from q3dviewer.utils.maths import matrix_to_euler, quaternion_to_matrix
-
-            position = np.asarray(camera_pose.position, dtype=np.float64)
-            target = np.asarray(camera_pose.target, dtype=np.float64)
-            distance = float(np.linalg.norm(position - target))
-            if distance <= 1e-8:
-                raise ValueError("camera position and target must be different")
-            camera_state = {
-                "center": target.tolist(),
-                "euler": matrix_to_euler(
-                    quaternion_to_matrix(camera_pose.rotation_xyzw)
-                ).tolist(),
-                "distance": distance,
-                "fov_degrees": camera_pose.fov_degrees,
-            }
+            camera_state = self._camera_state_for_pose(camera_pose)
         return self.widget.render_to_array(
             width,
             height,

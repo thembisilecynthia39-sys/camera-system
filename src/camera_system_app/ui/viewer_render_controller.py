@@ -7,7 +7,10 @@ from pathlib import Path
 
 from PySide6.QtCore import QTimer, QObject, Signal
 
-from camera_system_app.application.viewer_appearance import apply_appearance
+from camera_system_app.application.viewer_appearance import (
+    apply_appearance,
+    unpremultiply_rgba,
+)
 from camera_system_app.application.viewer_render_plan import RenderPlan, RenderPlanError
 from camera_system_app.domain.viewer import AppearanceSettings
 from camera_system_app.infrastructure.viewer_encoder import (
@@ -49,6 +52,7 @@ class ViewerRenderController(QObject):
         self._error = None
         self._restore_callback = None
         self._previous_appearance = None
+        self._previous_background_alpha = None
         self._progress = 0.0
 
     @property
@@ -87,6 +91,9 @@ class ViewerRenderController(QObject):
         self._previous_appearance = getattr(
             self.adapter, "appearance_settings", None
         )
+        self._previous_background_alpha = getattr(
+            self.adapter, "background_alpha", None
+        )
         self._set_progress(0.0)
         try:
             encoder_config = EncoderConfig(
@@ -102,6 +109,13 @@ class ViewerRenderController(QObject):
             self._encoder = self.encoder_factory(encoder_config)
             self._encoder.start()
             self.adapter.set_display_settings(plan.display)
+            set_background_alpha = getattr(
+                self.adapter, "set_background_alpha", None
+            )
+            if callable(set_background_alpha):
+                set_background_alpha(
+                    0.0 if plan.render.transparent_background else 1.0
+                )
             # The final readback is post-processed once on the CPU. Keep the
             # GPU draw neutral during export so exposure/tone mapping/etc. do
             # not get applied a second time before apply_appearance().
@@ -119,8 +133,8 @@ class ViewerRenderController(QObject):
             if set_quality is not None:
                 set_quality(plan.render.quality.value)
         except Exception as exc:
-            self._encoder = None
             self._fail(exc)
+            self._encoder = None
             raise ViewerRenderControllerError(str(exc)) from exc
         self._running = True
         self.state_changed.emit("running")
@@ -170,6 +184,7 @@ class ViewerRenderController(QObject):
                     height=self._plan.render.height,
                     camera_pose=pose,
                 )
+                frame = unpremultiply_rgba(frame)
                 frame = apply_appearance(frame, self._plan.appearance)
                 self._pending_frame = frame
             self._encoder.submit(self._pending_frame, block=False)
@@ -243,7 +258,7 @@ class ViewerRenderController(QObject):
         self._finalizing = False
         if encoder is not None:
             try:
-                if encoder.state is EncoderState.RUNNING:
+                if encoder.state in (EncoderState.CREATED, EncoderState.RUNNING):
                     encoder.abort()
             except Exception:
                 pass
@@ -257,6 +272,8 @@ class ViewerRenderController(QObject):
         self._restore_callback = None
         previous_appearance = self._previous_appearance
         self._previous_appearance = None
+        previous_background_alpha = self._previous_background_alpha
+        self._previous_background_alpha = None
         callback_succeeded = False
         if callback is not None:
             try:
@@ -269,6 +286,15 @@ class ViewerRenderController(QObject):
                 self.adapter.set_appearance_settings(previous_appearance)
             except Exception:
                 pass
+        if previous_background_alpha is not None:
+            set_background_alpha = getattr(
+                self.adapter, "set_background_alpha", None
+            )
+            if callable(set_background_alpha):
+                try:
+                    set_background_alpha(previous_background_alpha)
+                except Exception:
+                    pass
 
     def _set_progress(self, value: float) -> None:
         self._progress = max(0.0, min(1.0, float(value)))

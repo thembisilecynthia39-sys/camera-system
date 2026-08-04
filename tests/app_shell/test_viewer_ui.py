@@ -12,8 +12,6 @@ from camera_system_app.domain.viewer import (
     CameraBookmark,
     CameraMode,
     CameraPose,
-    CameraShot,
-    CameraTimeline,
     DisplayMode,
     DisplaySettings,
 )
@@ -27,7 +25,8 @@ def test_viewer_toolbar_exposes_core_roaming_and_presentation_actions(qapp):
     toolbar = ViewerToolbar()
     names = {button.text() for button in toolbar.findChildren(QToolButton)}
 
-    assert {"打开", "重置", "适配", "保存", "另存", "播放", "停止", "演示", "导出"} <= names
+    assert {"打开", "重置", "适配", "保存", "另存", "环视", "参数", "演示", "导出"} <= names
+    assert {"播放", "停止", "时间轴"}.isdisjoint(names)
     assert toolbar.display_mode_combo.findData(DisplayMode.STANDARD.value) >= 0
     assert toolbar.display_mode_combo.findData(DisplayMode.SPHERE_WIREFRAME.value) >= 0
     assert toolbar.display_mode_combo.findData(DisplayMode.OVERLAY.value) >= 0
@@ -35,30 +34,46 @@ def test_viewer_toolbar_exposes_core_roaming_and_presentation_actions(qapp):
     assert toolbar.view_preset_combo.findData("front") >= 0
 
 
-def test_viewer_toolbar_emits_mode_and_playback_signals(qapp):
+def test_result_viewer_removes_timeline_and_frame_controls(qapp, tmp_path):
+    toolbar = ViewerToolbar()
+    names = {button.text() for button in toolbar.findChildren(QToolButton)}
+
+    assert {"播放", "停止", "时间轴"}.isdisjoint(names)
+    assert {"环视", "参数", "演示", "导出"} <= names
+
+    page = ResultViewerPage(str(tmp_path / "results"), str(tmp_path / "viewer"))
+
+    assert not hasattr(page, "_timeline")
+    assert page._viewer_layout.count() == 2
+    assert not hasattr(page._toolbar, "play_button")
+    assert not hasattr(page._toolbar, "stop_button")
+    assert not hasattr(page._toolbar, "timeline_button")
+    page.deleteLater()
+
+
+def test_viewer_toolbar_emits_mode_and_panorama_signals(qapp):
     toolbar = ViewerToolbar()
     modes = []
-    playback = []
+    panorama = []
     toolbar.display_mode_changed.connect(modes.append)
-    toolbar.play_requested.connect(lambda: playback.append("play"))
+    toolbar.panorama_requested.connect(panorama.append)
 
     toolbar.display_mode_combo.setCurrentIndex(
         toolbar.display_mode_combo.findData(DisplayMode.SPHERE_SOLID.value)
     )
-    toolbar.play_button.click()
+    toolbar.panorama_button.click()
 
     assert modes == [DisplayMode.SPHERE_SOLID.value]
-    assert playback == ["play"]
+    assert panorama == [True]
 
 
-def test_viewer_toolbar_syncing_playback_state_does_not_emit_commands(qapp):
+def test_viewer_toolbar_syncing_panorama_state_does_not_emit_commands(qapp):
     toolbar = ViewerToolbar()
     commands = []
-    toolbar.play_requested.connect(lambda: commands.append("play"))
-    toolbar.pause_requested.connect(lambda: commands.append("pause"))
+    toolbar.panorama_requested.connect(commands.append)
 
-    toolbar.set_playing(True)
-    toolbar.set_playing(False)
+    toolbar.set_panorama_playing(True)
+    toolbar.set_panorama_playing(False)
 
     assert commands == []
 
@@ -388,7 +403,6 @@ def test_narrow_viewer_toggles_overlay_without_squeezing_gl(
     page.set_viewer_widget(viewport, "scene.ply", 1)
     qapp.processEvents()
 
-    assert page._timeline.isVisible()
     assert page._inspector.isVisible()
     assert page._inspector.is_collapsed is True
     before = page._viewer_stage.viewport_rect().size()
@@ -397,8 +411,6 @@ def test_narrow_viewer_toggles_overlay_without_squeezing_gl(
     page._toolbar.inspector_button.click()
     assert page._inspector.is_collapsed is False
     assert page._viewer_stage.viewport_rect().size() == before
-    page._toolbar.timeline_button.click()
-    assert page._timeline.isVisible() is False
     page._toolbar.inspector_button.click()
     assert page._inspector.is_collapsed is True
     page.hide()
@@ -416,25 +428,10 @@ def test_sphere_fallback_banner_survives_viewer_widget_activation(qapp, tmp_path
     page.hide()
 
 
-def test_result_page_exposes_model_backed_camera_director_timeline(qapp, tmp_path):
+def test_result_page_does_not_expose_camera_director_timeline(qapp, tmp_path):
     page = ResultViewerPage(str(tmp_path / "results"), str(tmp_path / "viewer"))
-    assert isinstance(page._timeline, ViewerTimelineWidget)
-    timeline = CameraTimeline(
-        shots=(
-            CameraShot(
-                "shot-1",
-                "走廊",
-                CameraPose(position=(0.0, 0.0, 5.0)),
-                CameraPose(position=(1.0, 0.0, 5.0)),
-            ),
-        ),
-        fps=24.0,
-    )
-    page.set_timeline(timeline)
-    assert page._timeline.timeline == timeline
-    assert page._timeline.frame_slider.maximum() == 72
-    page.set_current_frame(12)
-    assert page._timeline.frame_slider.value() == 12
+    assert not hasattr(page, "_timeline")
+    assert page._viewer_layout.count() == 2
     page.hide()
 
 

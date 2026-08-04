@@ -4,16 +4,19 @@ from __future__ import annotations
 
 import logging
 from dataclasses import replace
+from math import pi, radians
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QObject, Qt
+from PySide6.QtCore import QEvent, QObject, QTimer, Qt
 from PySide6.QtWidgets import (
+    QAbstractButton,
     QAbstractSpinBox,
     QApplication,
     QComboBox,
     QFileDialog,
     QLineEdit,
     QMessageBox,
+    QWidget,
 )
 
 from camera_system_app.application.viewer_render_plan import RenderPlan, RenderPlanError
@@ -59,6 +62,10 @@ class ViewerBindings(QObject):
         self._capture_adapter = None
         self._session = None
         self._playback = ViewerPlayback(parent=self)
+        self._panorama_active = False
+        self._panorama_timer = QTimer(self)
+        self._panorama_timer.setInterval(33)
+        self._panorama_timer.timeout.connect(self._on_panorama_tick)
         self._render_controller = None
         self._render_dialog = None
         self._project_store = ViewerProjectStore()
@@ -66,6 +73,10 @@ class ViewerBindings(QObject):
         self._presentation_state = None
         self._pending_open_path: str | None = None
         self._logger = logging.getLogger("camera_system_app.ui.viewer")
+        self._application = QApplication.instance()
+        if self._application is not None:
+            self._application.installEventFilter(self)
+        window.destroyed.connect(self._on_window_destroyed)
         window.result_page.open_local_result_requested.connect(self.open_result)
         window.result_page.select_local_result_requested.connect(
             self.select_local_result
@@ -99,20 +110,33 @@ class ViewerBindings(QObject):
         )
         window.result_page.save_requested.connect(self.save_project)
         window.result_page.save_as_requested.connect(self.save_project_as)
-        window.result_page.timeline_changed.connect(self._on_timeline_changed)
-        window.result_page.frame_selected.connect(self._on_frame_selected)
-        window.result_page.play_requested.connect(self.play)
-        window.result_page.pause_requested.connect(self.pause)
-        window.result_page.stop_requested.connect(self.stop)
+        window.result_page.panorama_requested.connect(self._set_panorama_active)
         window.result_page.render_requested.connect(self.start_render)
         window.result_page.presentation_requested.connect(
             lambda: self.set_presentation_mode(not self.is_presentation_mode)
         )
         self._playback.frame_changed.connect(self._on_playback_frame)
-        self._playback.playing_changed.connect(window.result_page.set_playing)
         self._playback.playback_finished.connect(self._on_playback_finished)
         window.navigation.currentRowChanged.connect(self._on_page_changed)
         window.installEventFilter(self)
+
+    def _on_window_destroyed(self, _object=None) -> None:
+        self._panorama_active = False
+        self._panorama_timer.stop()
+        self._detach_event_filters()
+
+    def _detach_event_filters(self) -> None:
+        application = getattr(self, "_application", None)
+        if application is not None:
+            application.removeEventFilter(self)
+        window = getattr(self, "window", None)
+        if window is not None:
+            try:
+                window.removeEventFilter(self)
+            except RuntimeError:
+                pass
+        self._application = None
+        self.window = None
 
     @property
     def is_presentation_mode(self) -> bool:
@@ -144,6 +168,7 @@ class ViewerBindings(QObject):
         except Exception as exc:
             self._on_failed(str(exc))
             return
+        self._set_panorama_active(False)
         self.window.result_page.show_loading(path)
         worker = ViewerLoadWorker(path, self.project_root, self)
         worker.loaded.connect(self._on_loaded)
@@ -284,11 +309,13 @@ class ViewerBindings(QObject):
         if self._session is None:
             return
         try:
-            self._session.set_camera_pose(pose)
+            applied_pose = self._session.set_camera_pose(pose)
         except (TypeError, ValueError) as exc:
             self.window.statusBar().showMessage("● 相机位置或目标无效：{}".format(exc))
             return
-        self.window.result_page.set_current_camera_pose(pose)
+        applied_pose = applied_pose or self._session.project.camera
+        self.window.result_page.set_current_camera_pose(applied_pose)
+        self.window.result_page.set_camera_pose(applied_pose)
         self._mark_project_dirty()
 
     def _next_bookmark_id(self) -> str:
@@ -329,9 +356,10 @@ class ViewerBindings(QObject):
         )
         if bookmark is None:
             return
-        self._session.set_camera_pose(bookmark.pose)
-        self.window.result_page.set_current_camera_pose(bookmark.pose)
-        self.window.result_page.set_camera_pose(bookmark.pose)
+        applied_pose = self._session.set_camera_pose(bookmark.pose)
+        applied_pose = applied_pose or self._session.project.camera
+        self.window.result_page.set_current_camera_pose(applied_pose)
+        self.window.result_page.set_camera_pose(applied_pose)
         self._mark_project_dirty()
 
     def _on_bookmark_delete_requested(self, bookmark_id: str) -> None:
@@ -372,12 +400,10 @@ class ViewerBindings(QObject):
             self._logger.warning("Cannot sample viewer timeline: %s", exc)
             return
         self._adapter.set_camera_pose(pose)
-        self.window.result_page.set_current_frame(frame)
 
     def play(self) -> None:
         if self._session is None or not self._session.project.timeline.shots:
             self.window.statusBar().showMessage("● 请先在 Camera Director 中添加镜头段")
-            self.window.result_page.set_playing(False)
             return
         try:
             self._playback.play()
@@ -390,6 +416,60 @@ class ViewerBindings(QObject):
     def stop(self) -> None:
         self._playback.stop()
 
+    def _set_panorama_active(self, active: bool) -> None:
+        active = bool(active)
+        if getattr(self, "window", None) is None:
+            self._panorama_active = False
+            self._panorama_timer.stop()
+            return
+        if active:
+            if self._adapter is None or self._session is None:
+                self.window.result_page.set_panorama_playing(False)
+                self.window.statusBar().showMessage("● 请先加载一个 3DGS 结果")
+                return
+            if self._panorama_active:
+                return
+            self._panorama_active = True
+            self.window.result_page.set_panorama_playing(True)
+            self._panorama_timer.start()
+            self.window.statusBar().showMessage("● 自动环视中 · 20 秒一周")
+            return
+
+        was_active = self._panorama_active
+        self._panorama_active = False
+        self._panorama_timer.stop()
+        self.window.result_page.set_panorama_playing(False)
+        if was_active:
+            end_interaction = getattr(self._adapter, "end_interaction", None)
+            if callable(end_interaction):
+                try:
+                    end_interaction()
+                except Exception:
+                    self._logger.exception("Cannot end panorama interaction cleanly")
+            try:
+                self._sync_camera_from_adapter()
+            except Exception as exc:
+                self._logger.exception("Cannot commit panorama camera")
+                self.window.statusBar().showMessage(
+                    "● 无法保存环视相机：{}".format(exc)
+                )
+
+    def _on_panorama_tick(self) -> None:
+        if not self._panorama_active or self._adapter is None:
+            return
+        delta_yaw = (2.0 * pi / 20.0) * (
+            self._panorama_timer.interval() / 1000.0
+        )
+        try:
+            pose = self._adapter.orbit(delta_yaw=delta_yaw)
+        except Exception as exc:
+            self._logger.exception("Automatic panorama failed")
+            self._set_panorama_active(False)
+            self.window.statusBar().showMessage("● 自动环视失败：{}".format(exc))
+            return
+        if pose is not None:
+            self.window.result_page.set_current_camera_pose(pose)
+
     def start_render(self, output_path=None):
         if self._session is None or self._adapter is None:
             self.window.statusBar().showMessage("● 请先加载一个 3DGS 结果")
@@ -398,6 +478,7 @@ class ViewerBindings(QObject):
             output_path = self._select_render_output()
         if not output_path:
             return None
+        self._set_panorama_active(False)
         try:
             plan = RenderPlan.from_project(self._session.project, output_path)
         except RenderPlanError as exc:
@@ -496,7 +577,6 @@ class ViewerBindings(QObject):
         set_fly_speed = getattr(self._adapter, "set_fly_speed", None)
         if callable(set_fly_speed):
             set_fly_speed(self._session.project.fly_speed)
-        self.window.result_page.set_current_frame(0)
 
     def _on_playback_finished(self) -> None:
         self.window.statusBar().showMessage("● 相机漫游预览完成")
@@ -510,7 +590,7 @@ class ViewerBindings(QObject):
     def _sync_camera_from_adapter(self) -> None:
         if self._session is not None and self._adapter is not None:
             pose = self._adapter.get_camera_pose()
-            self._session.set_camera_pose(pose)
+            self._session.record_camera_pose(pose)
             self.window.result_page.set_current_camera_pose(pose)
             self.window.result_page.set_camera_pose(pose)
             self._mark_project_dirty()
@@ -522,6 +602,7 @@ class ViewerBindings(QObject):
         *,
         allow_stale: bool = False,
         prompt_stale: bool = False,
+        source_identity=None,
     ) -> ViewerProject:
         sidecar = self._project_store.default_path(source_path)
         self._project_sidecar = sidecar
@@ -532,6 +613,7 @@ class ViewerBindings(QObject):
                 sidecar,
                 source_path=source_path,
                 allow_source_mismatch=allow_stale,
+                source_identity=source_identity,
             )
         except ViewerProjectSourceMismatchError:
             if prompt_stale:
@@ -547,6 +629,7 @@ class ViewerBindings(QObject):
                         sidecar,
                         source_path=source_path,
                         allow_source_mismatch=True,
+                        source_identity=source_identity,
                     )
             self._logger.warning("Viewer sidecar source identity mismatch: %s", sidecar)
             return fallback
@@ -594,11 +677,14 @@ class ViewerBindings(QObject):
                 "sidebar_visible": bool(sidebar and sidebar.isVisible()),
                 "status_visible": self.window.statusBar().isVisible(),
                 "fullscreen": self.window.isFullScreen(),
+                "camera_info_visible": self.window.result_page.camera_info_visible,
             }
             if sidebar is not None:
                 sidebar.hide()
             self.window.statusBar().hide()
             self.window.showFullScreen()
+            self.window.result_page.set_camera_info_visible(True)
+            self.window.result_page.set_presentation_mode(True)
             return
         if not enabled and self._presentation_state is not None:
             state = self._presentation_state
@@ -611,24 +697,74 @@ class ViewerBindings(QObject):
             if sidebar is not None:
                 sidebar.setVisible(state["sidebar_visible"])
             self.window.statusBar().setVisible(state["status_visible"])
+            self.window.result_page.set_camera_info_visible(
+                state["camera_info_visible"]
+            )
+            self.window.result_page.set_presentation_mode(False)
+
+    def _is_viewer_key_target(self, watched) -> bool:
+        window = getattr(self, "window", None)
+        if window is None:
+            return False
+        try:
+            if watched is window:
+                return True
+            if not isinstance(watched, QWidget):
+                return False
+            return watched is window.result_page or window.result_page.isAncestorOf(watched)
+        except RuntimeError:
+            # A QApplication-level filter can receive queued events after a
+            # test/window has scheduled its native object for destruction.
+            return False
+
+    def _orbit_from_keyboard(self, delta_yaw=0.0, delta_pitch=0.0) -> bool:
+        if self._adapter is None:
+            return False
+        orbit = getattr(self._adapter, "orbit", None)
+        if not callable(orbit):
+            return False
+        try:
+            pose = orbit(delta_yaw=delta_yaw, delta_pitch=delta_pitch)
+        except Exception as exc:
+            self._logger.exception("Keyboard orbit failed")
+            self.window.statusBar().showMessage("● 视角环视失败：{}".format(exc))
+            return True
+        if pose is not None:
+            if self._session is not None:
+                try:
+                    self._session.record_camera_pose(pose)
+                except (TypeError, ValueError) as exc:
+                    self.window.statusBar().showMessage(
+                        "● 无法记录环视相机：{}".format(exc)
+                    )
+                    return True
+            self.window.result_page.set_current_camera_pose(pose)
+            self.window.result_page.set_camera_pose(pose)
+            self._mark_project_dirty()
+        return True
 
     def eventFilter(self, watched, event):
-        if watched is self.window and event.type() == QEvent.Type.KeyPress:
+        if (
+            self._is_viewer_key_target(watched)
+            and event.type() == QEvent.Type.KeyPress
+        ):
             if self.is_presentation_mode and event.key() == Qt.Key.Key_Escape:
                 self.set_presentation_mode(False)
                 return True
             focus = QApplication.focusWidget()
-            text_focus = isinstance(focus, (QLineEdit, QAbstractSpinBox, QComboBox))
-            if not text_focus:
-                if event.key() == Qt.Key.Key_Space:
-                    self.pause() if self._playback.is_playing else self.play()
-                    return True
+            control_focus = isinstance(
+                focus,
+                (QAbstractButton, QLineEdit, QAbstractSpinBox, QComboBox),
+            )
+            if not control_focus:
                 if event.key() == Qt.Key.Key_Left:
-                    self._playback.step_backward()
-                    return True
+                    return self._orbit_from_keyboard(delta_yaw=-radians(5.0))
                 if event.key() == Qt.Key.Key_Right:
-                    self._playback.step_forward()
-                    return True
+                    return self._orbit_from_keyboard(delta_yaw=radians(5.0))
+                if event.key() == Qt.Key.Key_Up:
+                    return self._orbit_from_keyboard(delta_pitch=radians(5.0))
+                if event.key() == Qt.Key.Key_Down:
+                    return self._orbit_from_keyboard(delta_pitch=-radians(5.0))
         return super().eventFilter(watched, event)
 
     def select_local_result(self) -> None:
@@ -644,6 +780,8 @@ class ViewerBindings(QObject):
         self.open_result(selected)
 
     def shutdown(self, timeout_ms: int = 5000) -> bool:
+        self._set_panorama_active(False)
+        self._detach_event_filters()
         if self._render_controller is not None and self._render_controller.is_running:
             self._render_controller.cancel()
         if self._worker is not None and self._worker.isRunning():
@@ -656,41 +794,52 @@ class ViewerBindings(QObject):
         return True
 
     def _on_loaded(self, payload, path: str) -> None:
+        previous_adapter = self._adapter
+        previous_session = self._session
+        previous_sidecar = self._project_sidecar
+        adapter = previous_adapter
+        adapter_snapshot = None
+        created_adapter = False
         try:
-            gaussians, bounds = payload
-            if self._adapter is None:
-                self._adapter = Q3DViewerAdapter(self.project_root, self)
-                self._adapter.rendering_failed.connect(self._on_failed)
-                self._adapter.sphere_availability_changed.connect(
+            gaussians, bounds, source_size, source_sha256 = payload
+            if adapter is None:
+                adapter = Q3DViewerAdapter(self.project_root, self)
+                self._adapter = adapter
+                created_adapter = True
+                adapter.rendering_failed.connect(self._on_failed)
+                adapter.sphere_availability_changed.connect(
                     self._on_sphere_availability_changed
                 )
-                self._adapter.widget.interaction_finished.connect(
+                adapter.widget.interaction_finished.connect(
                     self._sync_camera_from_adapter
                 )
-                self._adapter.set_active(
+                adapter.set_active(
                     self.window.stack.currentWidget() is self.window.result_page
                 )
-            count = self._adapter.set_gaussians(gaussians, bounds=bounds)
+            else:
+                snapshot_scene = getattr(adapter, "snapshot_scene", None)
+                if callable(snapshot_scene):
+                    adapter_snapshot = snapshot_scene()
+            count = adapter.set_gaussians(gaussians, bounds=bounds)
             source = Path(path).resolve()
-            source_size = source.stat().st_size
-            source_sha256 = self._project_store.sha256_file(source)
             fallback = ViewerProject(
                 source_path=str(source),
                 source_size=source_size,
                 source_sha256=source_sha256,
-                camera=self._adapter.get_camera_pose(),
+                camera=adapter.get_camera_pose(),
             )
             project = self._load_project_state(
                 source,
                 fallback,
                 prompt_stale=True,
+                source_identity=(source_size, source_sha256),
             )
-            self._session = ViewerSession(self._adapter, project)
-            self._session.apply_project(project)
+            session = ViewerSession(adapter, project)
+            session.apply_project(project)
+            self._session = session
             self.window.result_page.set_project_dirty(False)
             self._ensure_render_controller()
             self._playback.set_timeline(project.timeline)
-            self.window.result_page.set_timeline(project.timeline)
             self.window.result_page.set_current_camera_pose(project.camera)
             self.window.result_page.set_camera_pose(project.camera)
             self.window.result_page.set_camera_mode(project.camera_mode)
@@ -701,12 +850,27 @@ class ViewerBindings(QObject):
             self.window.result_page._inspector.set_appearance_settings(project.appearance)
             self.window.result_page._inspector.set_render_settings(project.render)
             self.window.result_page.set_viewer_widget(
-                self._adapter.widget, path, count
+                adapter.widget, path, count
             )
             self.window.statusBar().showMessage(
                 "● q3dviewer 已加载本地结果：{}".format(path)
             )
         except Exception as exc:
+            self._session = previous_session
+            self._project_sidecar = previous_sidecar
+            if created_adapter and adapter is not None:
+                try:
+                    adapter.release()
+                except Exception:
+                    self._logger.exception("Cannot release failed q3dviewer adapter")
+                self._adapter = previous_adapter
+            elif adapter_snapshot is not None and adapter is previous_adapter:
+                restore_scene = getattr(adapter, "restore_scene", None)
+                if callable(restore_scene):
+                    try:
+                        restore_scene(adapter_snapshot)
+                    except Exception:
+                        self._logger.exception("Cannot restore previous q3dviewer scene")
             self._logger.exception("Cannot initialize embedded q3dviewer")
             self._on_failed(str(exc))
 
@@ -738,6 +902,7 @@ class ViewerBindings(QObject):
         worker.deleteLater()
 
     def _on_page_changed(self, index: int) -> None:
+        self._set_panorama_active(False)
         if self._adapter is None:
             return
         active_page = (

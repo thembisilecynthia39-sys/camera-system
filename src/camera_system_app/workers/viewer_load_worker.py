@@ -8,6 +8,7 @@ from PySide6.QtCore import QThread, Signal
 from camera_system_app.infrastructure.adapters.q3dviewer_adapter import (
     load_gaussian_ply,
 )
+from camera_system_app.infrastructure.viewer_project_store import ViewerProjectStore
 
 
 class ViewerLoadWorker(QThread):
@@ -45,10 +46,19 @@ class ViewerLoadWorker(QThread):
                 np.percentile(points, 1, axis=0),
                 np.percentile(points, 99, axis=0),
             )
+            source_path = Path(self.path).resolve()
+            source_size = source_path.stat().st_size
+            source_sha256 = ViewerProjectStore.sha256_file(
+                source_path,
+                cancel_check=self.isInterruptionRequested,
+            )
         except InterruptedError:
             return
         except Exception as exc:
             self.failed.emit(str(exc))
             return
         if not self.isInterruptionRequested():
-            self.loaded.emit((data, bounds), self.path)
+            self.loaded.emit(
+                (data, bounds, source_size, source_sha256),
+                self.path,
+            )

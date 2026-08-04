@@ -103,6 +103,171 @@ def test_presentation_mode_hides_chrome_and_is_reversible(qapp, tmp_path, monkey
     window.deleteLater()
 
 
+def test_presentation_escape_from_viewer_child_exits_mode(qapp, tmp_path, monkeypatch):
+    binding, window = _binding(tmp_path, qapp, monkeypatch)
+    binding.set_presentation_mode(True)
+
+    event = QKeyEvent(
+        QKeyEvent.Type.KeyPress,
+        Qt.Key.Key_Escape,
+        Qt.KeyboardModifier.NoModifier,
+    )
+
+    assert binding.eventFilter(window.result_page, event) is True
+    assert binding.is_presentation_mode is False
+    window.deleteLater()
+
+
+def test_presentation_button_reflects_active_state(qapp, tmp_path, monkeypatch):
+    binding, window = _binding(tmp_path, qapp, monkeypatch)
+
+    binding.set_presentation_mode(True)
+
+    assert window.result_page._toolbar.presentation_button.text() == "退出演示"
+    assert window.result_page._toolbar.presentation_button.toolTip() == "退出全屏演示模式"
+
+    binding.set_presentation_mode(False)
+    assert window.result_page._toolbar.presentation_button.text() == "演示"
+    window.deleteLater()
+
+
+def test_presentation_forces_camera_xyz_readout_and_restores_visibility(
+    qapp, tmp_path, monkeypatch
+):
+    binding, window = _binding(tmp_path, qapp, monkeypatch)
+    window.result_page.set_camera_info_visible(False)
+
+    binding.set_presentation_mode(True)
+
+    assert not window.result_page._camera_info_label.isHidden()
+
+    binding.set_presentation_mode(False)
+    assert window.result_page._camera_info_label.isHidden()
+    window.deleteLater()
+
+
+def test_left_arrow_orbits_without_timeline(qapp, tmp_path, monkeypatch):
+    binding, window = _binding(tmp_path, qapp, monkeypatch)
+
+    class OrbitAdapter:
+        def __init__(self):
+            self.calls = []
+            self.pose = CameraPose(position=(0.0, 0.0, 5.0))
+
+        def orbit(self, delta_yaw=0.0, delta_pitch=0.0):
+            self.calls.append((delta_yaw, delta_pitch))
+            return self.pose
+
+    adapter = OrbitAdapter()
+    binding._adapter = adapter
+    binding._session = ViewerSession(adapter, ViewerProject())
+    event = QKeyEvent(
+        QKeyEvent.Type.KeyPress,
+        Qt.Key.Key_Left,
+        Qt.KeyboardModifier.NoModifier,
+    )
+
+    assert binding.eventFilter(window.result_page, event) is True
+    assert adapter.calls
+    assert adapter.calls[-1][0] < 0.0
+    assert binding._session.project.camera == adapter.pose
+    assert binding._session.is_dirty
+    window.deleteLater()
+
+
+def test_presentation_arrow_orbits_even_with_timeline(
+    qapp, tmp_path, monkeypatch
+):
+    binding, window = _binding(tmp_path, qapp, monkeypatch)
+
+    class OrbitAdapter:
+        def __init__(self):
+            self.calls = []
+
+        def orbit(self, delta_yaw=0.0, delta_pitch=0.0):
+            self.calls.append((delta_yaw, delta_pitch))
+
+    from camera_system_app.domain.viewer import CameraShot, CameraTimeline
+
+    adapter = OrbitAdapter()
+    timeline = CameraTimeline(
+        shots=(
+            CameraShot(
+                "shot",
+                "镜头",
+                CameraPose(position=(0.0, 0.0, 5.0)),
+                CameraPose(position=(2.0, 0.0, 5.0)),
+                duration_seconds=1.0,
+            ),
+        ),
+        fps=2.0,
+    )
+    binding._adapter = adapter
+    binding._session = ViewerSession(adapter, ViewerProject(timeline=timeline))
+    binding._playback.set_timeline(timeline)
+    binding.set_presentation_mode(True)
+
+    event = QKeyEvent(
+        QKeyEvent.Type.KeyPress,
+        Qt.Key.Key_Right,
+        Qt.KeyboardModifier.NoModifier,
+    )
+
+    assert binding.eventFilter(window.result_page, event) is True
+    assert adapter.calls
+    assert adapter.calls[-1][0] > 0.0
+    assert binding._playback.current_frame == 0
+    binding.set_presentation_mode(False)
+    window.deleteLater()
+
+
+def test_panorama_control_drives_timer_and_commits_once_on_stop(
+    qapp, tmp_path, monkeypatch
+):
+    binding, window = _binding(tmp_path, qapp, monkeypatch)
+
+    class OrbitAdapter:
+        def __init__(self):
+            self.calls = []
+            self.end_calls = 0
+            self.pose = CameraPose(position=(0.0, 0.0, 5.0))
+
+        def orbit(self, delta_yaw=0.0, delta_pitch=0.0):
+            self.calls.append((delta_yaw, delta_pitch))
+            return self.pose
+
+        def get_camera_pose(self):
+            return self.pose
+
+        def set_camera_pose(self, pose):
+            self.pose = pose
+            return pose
+
+        def end_interaction(self):
+            self.end_calls += 1
+
+    adapter = OrbitAdapter()
+    binding._adapter = adapter
+    binding._session = ViewerSession(adapter, ViewerProject())
+    button = getattr(window.result_page._toolbar, "panorama_button", None)
+    assert button is not None
+    window.result_page._toolbar.setEnabled(True)
+
+    button.click()
+    assert binding._panorama_active is True
+    assert binding._panorama_timer.isActive()
+
+    binding._on_panorama_tick()
+    assert adapter.calls
+    assert adapter.calls[-1][0] > 0.0
+
+    button.click()
+    assert binding._panorama_active is False
+    assert not binding._panorama_timer.isActive()
+    assert adapter.end_calls == 1
+    window.deleteLater()
+
+
 def test_bindings_drive_adapter_from_exact_timeline_frames(qapp, tmp_path, monkeypatch):
     binding, window = _binding(tmp_path, qapp, monkeypatch)
 
@@ -136,6 +301,88 @@ def test_bindings_drive_adapter_from_exact_timeline_frames(qapp, tmp_path, monke
 
     assert adapter.poses[-1] == sample_timeline(timeline, 1)
     assert binding._playback.current_frame == 1
+    window.deleteLater()
+
+
+def test_bindings_display_adapter_canonical_camera_pose_after_edit(
+    qapp, tmp_path, monkeypatch
+):
+    binding, window = _binding(tmp_path, qapp, monkeypatch)
+
+    requested = CameraPose(
+        position=(1.0, 0.0, 0.0),
+        target=(0.0, 0.0, 0.0),
+    )
+    canonical = CameraPose(
+        position=(1.0, 0.0, 0.0),
+        target=(0.0, 0.0, 0.0),
+        rotation_xyzw=(0.0, 0.7071067812, 0.0, 0.7071067812),
+    )
+
+    class CanonicalAdapter:
+        def set_camera_pose(self, _pose):
+            return canonical
+
+    adapter = CanonicalAdapter()
+    binding._adapter = adapter
+    binding._session = ViewerSession(adapter, ViewerProject())
+    poses = []
+    window.result_page.set_current_camera_pose = poses.append
+
+    binding._on_camera_pose_changed(requested)
+
+    assert binding._session.project.camera == canonical
+    assert poses == [canonical]
+    window.deleteLater()
+
+
+def test_failed_loaded_project_keeps_previous_adapter_scene(
+    qapp, tmp_path, monkeypatch
+):
+    binding, window = _binding(tmp_path, qapp, monkeypatch)
+
+    class FailingAdapter:
+        def __init__(self, data):
+            self.data = np.asarray(data).copy()
+            self.pose = CameraPose(position=(0.0, 0.0, 5.0))
+
+        def set_gaussians(self, data, bounds=None):
+            self.data = np.asarray(data).copy()
+            return int(self.data.shape[0])
+
+        def get_camera_pose(self):
+            return self.pose
+
+        def snapshot_scene(self):
+            return {"data": self.data.copy()}
+
+        def restore_scene(self, snapshot):
+            self.data = snapshot["data"].copy()
+
+        def set_display_settings(self, _settings):
+            raise RuntimeError("display setup failed")
+
+    old_data = np.array([[1.0, 2.0]], dtype=np.float32)
+    adapter = FailingAdapter(old_data)
+    old_project = ViewerProject(source_path=str(tmp_path / "old.ply"))
+    binding._adapter = adapter
+    binding._session = ViewerSession(adapter, old_project)
+    old_viewer = QWidget()
+    window.result_page.set_viewer_widget(old_viewer, "old.ply", 1)
+    qapp.processEvents()
+    window.result_page.show_loading("new.ply")
+
+    payload = (
+        np.array([[9.0, 8.0]], dtype=np.float32),
+        (np.zeros(3, dtype=np.float32), np.ones(3, dtype=np.float32)),
+        12,
+        "b" * 64,
+    )
+    binding._on_loaded(payload, str(tmp_path / "new.ply"))
+    qapp.processEvents()
+
+    assert np.array_equal(adapter.data, old_data)
+    assert window.result_page._viewer_widget is old_viewer
     window.deleteLater()
 
 
@@ -183,42 +430,25 @@ def test_bindings_render_a_single_png_and_restore_scene_controls(qapp, tmp_path,
     window.deleteLater()
 
 
-def test_bindings_keyboard_steps_timeline_without_stealing_text_focus(
+def test_bindings_keyboard_orbits_without_timeline_controls(
     qapp, tmp_path, monkeypatch
 ):
     binding, window = _binding(tmp_path, qapp, monkeypatch)
 
     class FakeAdapter:
         def __init__(self):
-            self.poses = []
+            self.calls = []
 
-        def set_camera_pose(self, pose):
-            self.poses.append(pose)
-
-    from camera_system_app.domain.viewer import CameraShot, CameraTimeline
+        def orbit(self, delta_yaw=0.0, delta_pitch=0.0):
+            self.calls.append((delta_yaw, delta_pitch))
 
     adapter = FakeAdapter()
-    timeline = CameraTimeline(
-        shots=(
-            CameraShot(
-                "shot",
-                "镜头",
-                CameraPose(position=(0.0, 0.0, 5.0)),
-                CameraPose(position=(2.0, 0.0, 5.0)),
-                duration_seconds=1.0,
-            ),
-        ),
-        fps=2.0,
-    )
     binding._adapter = adapter
-    binding._session = ViewerSession(adapter, ViewerProject(timeline=timeline))
-    binding._playback.set_timeline(timeline)
-    binding._playback.set_frame(0)
+    binding._session = ViewerSession(adapter, ViewerProject())
 
     event = QKeyEvent(QKeyEvent.KeyPress, Qt.Key.Key_Right, Qt.KeyboardModifier.NoModifier)
     assert binding.eventFilter(window, event) is True
-    assert binding._playback.current_frame == 1
-    assert adapter.poses[-1] == sample_timeline(timeline, 1)
+    assert adapter.calls[-1][0] > 0.0
     window.deleteLater()
 
 

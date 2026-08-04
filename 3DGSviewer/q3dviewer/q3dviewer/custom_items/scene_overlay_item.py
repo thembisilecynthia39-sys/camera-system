@@ -9,6 +9,7 @@ import numpy as np
 from OpenGL.GL import *
 from OpenGL.GL import shaders
 
+from q3dviewer.Qt import QtCore, QtGui
 from q3dviewer.base_item import BaseItem
 from q3dviewer.utils import set_uniform
 
@@ -158,6 +159,92 @@ class SceneOverlayItem(BaseItem):
             return np.empty((0, 7), dtype=np.float32)
         return np.asarray(vertices, dtype=np.float32)
 
+    def axis_labels(self):
+        """Return semantic XYZ label positions for the current scene bounds."""
+
+        lo = np.asarray(self.bounds[0], dtype=np.float32)
+        hi = np.asarray(self.bounds[1], dtype=np.float32)
+        center = (lo + hi) * 0.5
+        span = np.maximum(hi - lo, 1e-3)
+        extent = max(float(np.max(span)), 1.0)
+        step = self._nice_step(extent / 10.0)
+        axis_length = max(extent * 0.35, step * 2.0)
+        origin = np.array([center[0], center[1], lo[2]], dtype=np.float32)
+        endpoints = (
+            origin + [axis_length, 0.0, 0.0],
+            origin + [0.0, axis_length, 0.0],
+            origin + [0.0, 0.0, axis_length],
+        )
+        colors = (
+            (1.0, 0.2, 0.2, 0.9),
+            (0.2, 1.0, 0.3, 0.9),
+            (0.2, 0.5, 1.0, 0.9),
+        )
+        return tuple(
+            {
+                "text": text,
+                "position": tuple(float(value) for value in position),
+                "color": color,
+            }
+            for text, position, color in zip(("X", "Y", "Z"), endpoints, colors)
+        )
+
+    @staticmethod
+    def _project_to_screen(widget, position):
+        try:
+            view = np.asarray(widget.view_matrix, dtype=np.float64)
+            projection = np.asarray(widget.get_projection_matrix(), dtype=np.float64)
+            clip = projection @ view @ np.asarray((*position, 1.0), dtype=np.float64)
+        except (AttributeError, TypeError, ValueError):
+            return None
+        if clip.shape != (4,) or not np.isfinite(clip).all() or clip[3] <= 1e-8:
+            return None
+        ndc = clip[:3] / clip[3]
+        if not np.isfinite(ndc).all() or abs(ndc[0]) > 1.15 or abs(ndc[1]) > 1.15:
+            return None
+        width = max(1, int(widget.width()))
+        height = max(1, int(widget.height()))
+        return (
+            float((ndc[0] + 1.0) * 0.5 * width),
+            float((1.0 - ndc[1]) * 0.5 * height),
+        )
+
+    def _paint_axis_labels(self, widget):
+        if not self.options["axis"]:
+            return
+        painter = QtGui.QPainter(widget)
+        painter.setRenderHints(
+            QtGui.QPainter.RenderHint.Antialiasing
+            | QtGui.QPainter.RenderHint.TextAntialiasing
+        )
+        font = QtGui.QFont("Sans Serif")
+        font.setPointSize(11)
+        font.setBold(True)
+        painter.setFont(font)
+        metrics = painter.fontMetrics()
+        for label in self.axis_labels():
+            point = self._project_to_screen(widget, label["position"])
+            if point is None:
+                continue
+            text = label["text"]
+            text_width = metrics.horizontalAdvance(text)
+            box = QtCore.QRectF(
+                point[0] + 7.0,
+                point[1] - metrics.height() * 0.5 - 4.0,
+                text_width + 12.0,
+                metrics.height() + 8.0,
+            )
+            color = QtGui.QColor.fromRgbF(*label["color"])
+            painter.setBrush(QtGui.QColor(8, 18, 28, 220))
+            painter.setPen(QtGui.QColor(37, 58, 71, 230))
+            painter.drawRoundedRect(box, 4.0, 4.0)
+            painter.setPen(color)
+            painter.drawText(
+                QtCore.QPointF(point[0] + 13.0, point[1] + metrics.ascent() * 0.35),
+                text,
+            )
+        painter.end()
+
     def initialize_gl(self):
         shader_dir = Path(__file__).resolve().parent.parent / "shaders"
         vertex_source = (shader_dir / "scene_overlay_vert.glsl").read_text(encoding="utf-8")
@@ -210,6 +297,7 @@ class SceneOverlayItem(BaseItem):
         glDepthMask(GL_TRUE)
         glDisable(GL_BLEND)
         glUseProgram(0)
+        self._paint_axis_labels(widget)
         return True
 
     def release_gl(self):

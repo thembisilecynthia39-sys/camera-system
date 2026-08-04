@@ -162,6 +162,24 @@ def test_scene_overlay_item_keeps_bounds_and_toggle_state_without_gl_context():
     assert overlay.bounds[1] == pytest.approx((4.0, 3.0, 6.0))
 
 
+def test_scene_overlay_exposes_labeled_xyz_axis_endpoints():
+    prepare_q3dviewer(PROJECT_ROOT)
+    from q3dviewer.custom_items.scene_overlay_item import SceneOverlayItem
+
+    overlay = SceneOverlayItem()
+    overlay.set_bounds((-2.0, -1.0, 0.0), (4.0, 3.0, 6.0))
+
+    labels = overlay.axis_labels()
+
+    assert [label["text"] for label in labels] == ["X", "Y", "Z"]
+    assert labels[0]["color"] == pytest.approx((1.0, 0.2, 0.2, 0.9))
+    assert labels[1]["color"] == pytest.approx((0.2, 1.0, 0.3, 0.9))
+    assert labels[2]["color"] == pytest.approx((0.2, 0.5, 1.0, 0.9))
+    assert labels[0]["position"][0] > 2.0
+    assert labels[1]["position"][1] > 1.0
+    assert labels[2]["position"][2] > 0.0
+
+
 def test_scene_overlay_expands_degenerate_single_gaussian_bounds():
     prepare_q3dviewer(PROJECT_ROOT)
     from q3dviewer.custom_items.scene_overlay_item import SceneOverlayItem
@@ -209,3 +227,16 @@ def test_sphere_shaders_declare_shared_data_and_ray_intersection_contract():
     assert "sphere_center" in fragment
     assert "discard" in fragment
     assert "render_style" in fragment
+
+
+def test_sphere_pass_matches_premultiplied_alpha_shader_output():
+    source = (
+        PROJECT_ROOT
+        / "3DGSviewer"
+        / "q3dviewer"
+        / "q3dviewer"
+        / "custom_items"
+        / "gaussian_sphere_pass.py"
+    ).read_text(encoding="utf-8")
+
+    assert "glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA)" in source

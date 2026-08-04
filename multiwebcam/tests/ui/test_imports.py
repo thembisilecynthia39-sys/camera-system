@@ -5,7 +5,7 @@ import pytest
 from PySide6.QtCore import QPoint, QPointF, Qt
 from PySide6.QtGui import QPixmap, QWheelEvent
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QLabel, QPushButton
+from PySide6.QtWidgets import QApplication, QFrame, QLabel, QPushButton
 
 from multiwebcam.profiles import SourceProfile
 from multiwebcam.profiles.repository import ProfileRepository
@@ -18,6 +18,7 @@ from multiwebcam.sources.controls import V4L2Control
 from multiwebcam.ui import CaptureCoordinator, FocusView, GridView, SourceInfo, SourceTile, frame_to_pixmap
 from multiwebcam.ui.coordinator import CameraLoadResult
 from multiwebcam.ui.components import GuardedSlider, GuardedSpinBox
+from multiwebcam.ui.theme import app_stylesheet
 from multiwebcam.ui.views.control_panel import ControlPanel
 
 
@@ -713,6 +714,24 @@ def test_grid_view_has_five_balanced_status_cards(qapp):
 
     assert titles == ["系统状态", "AI 检测", "数据链路", "质量监测", "告警信息"]
     assert all(card.maximumHeight() <= 210 for card in cards)
+
+
+def test_grid_view_system_status_scrolls_instead_of_clipping(qapp):
+    view = GridView(capture_only=True)
+    view.setStyleSheet(app_stylesheet())
+    view.resize(776, 602)
+    view.show()
+    qapp.processEvents()
+
+    system_card = view._panel_stack.widget(0).findChildren(
+        QFrame, "dashboardCard"
+    )[0]
+
+    assert system_card.height() >= system_card.sizeHint().height()
+    assert view._panel_scroll.horizontalScrollBar().maximum() == 0
+    assert view._panel_scroll.verticalScrollBar().maximum() > 0
+
+    view.close()
 
 
 def test_grid_view_data_link_tracks_reconstructed_3dgs_file(qapp):

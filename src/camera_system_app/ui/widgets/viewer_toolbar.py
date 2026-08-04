@@ -27,13 +27,10 @@ class ViewerToolbar(QWidget):
     display_mode_changed = Signal(str)
     quality_changed = Signal(str)
     view_preset_changed = Signal(str)
-    play_requested = Signal()
-    pause_requested = Signal()
-    stop_requested = Signal()
+    panorama_requested = Signal(bool)
     presentation_requested = Signal()
     render_requested = Signal()
     inspector_requested = Signal()
-    timeline_requested = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -95,19 +92,15 @@ class ViewerToolbar(QWidget):
         self.view_preset_combo.addItem("下", "bottom")
         primary_row.addWidget(self.view_preset_combo)
 
-        self.play_button = self._button("播放", "播放相机漫游")
-        self.play_button.setCheckable(True)
-        self.stop_button = self._button("停止", "停止相机漫游")
+        self.panorama_button = self._button("环视", "开始自动环视 360°")
+        self.panorama_button.setCheckable(True)
         self.presentation_button = self._button("演示", "进入全屏演示模式")
         self.render_button = self._button("导出", "导出 PNG 或 MP4")
         self.render_button.setObjectName("primaryButton")
-        playback_row.addWidget(self.play_button)
-        playback_row.addWidget(self.stop_button)
+        playback_row.addWidget(self.panorama_button)
         self.inspector_button = self._button("参数", "显示或隐藏查看器参数面板")
         self.inspector_button.setCheckable(True)
-        self.timeline_button = self._button("时间轴", "显示或隐藏 Camera Director 时间轴")
         playback_row.addWidget(self.inspector_button)
-        playback_row.addWidget(self.timeline_button)
         playback_row.addWidget(self.presentation_button)
         playback_row.addWidget(self.render_button)
         playback_row.addStretch(1)
@@ -122,10 +115,8 @@ class ViewerToolbar(QWidget):
         self.display_mode_combo.currentIndexChanged.connect(self._emit_mode)
         self.quality_combo.currentIndexChanged.connect(self._emit_quality)
         self.view_preset_combo.currentIndexChanged.connect(self._emit_view_preset)
-        self.play_button.toggled.connect(self._emit_playback)
-        self.stop_button.clicked.connect(self._stop_playback)
+        self.panorama_button.toggled.connect(self._emit_panorama)
         self.inspector_button.clicked.connect(self.inspector_requested.emit)
-        self.timeline_button.clicked.connect(self.timeline_requested.emit)
         self.presentation_button.clicked.connect(self.presentation_requested.emit)
         self.render_button.clicked.connect(self.render_requested.emit)
 
@@ -157,26 +148,36 @@ class ViewerToolbar(QWidget):
         self.view_preset_combo.setCurrentIndex(0)
         del blocker
 
-    def _emit_playback(self, playing):
-        if playing:
-            self.play_button.setText("暂停")
-            self.play_requested.emit()
-        else:
-            self.play_button.setText("播放")
-            self.pause_requested.emit()
+    def _emit_panorama(self, enabled):
+        enabled = bool(enabled)
+        self.panorama_button.setText("停止环视" if enabled else "环视")
+        self.panorama_button.setToolTip(
+            "停止自动环视" if enabled else "开始自动环视 360°"
+        )
+        self.panorama_requested.emit(enabled)
 
-    def _stop_playback(self):
-        self.play_button.setChecked(False)
-        self.stop_requested.emit()
-
-    def set_playing(self, playing):
-        blocker = QSignalBlocker(self.play_button)
-        self.play_button.setChecked(bool(playing))
+    def set_panorama_playing(self, playing):
+        playing = bool(playing)
+        blocker = QSignalBlocker(self.panorama_button)
+        self.panorama_button.setChecked(playing)
         del blocker
-        self.play_button.setText("暂停" if playing else "播放")
+        self.panorama_button.setText("停止环视" if playing else "环视")
+        self.panorama_button.setToolTip(
+            "停止自动环视" if playing else "开始自动环视 360°"
+        )
 
     def set_project_dirty(self, dirty):
         self.save_button.setText("保存*" if dirty else "保存")
+
+    def set_presentation_mode(self, enabled):
+        enabled = bool(enabled)
+        self.presentation_button.setText("退出演示" if enabled else "演示")
+        self.presentation_button.setToolTip(
+            "退出全屏演示模式" if enabled else "进入全屏演示模式"
+        )
+        self.presentation_button.setAccessibleName(
+            "退出全屏演示模式" if enabled else "进入全屏演示模式"
+        )
 
     def set_inspector_expanded(self, expanded):
         blocker = QSignalBlocker(self.inspector_button)

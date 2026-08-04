@@ -99,6 +99,40 @@ def test_session_camera_and_appearance_changes_are_independent_updates():
     assert session.is_dirty
 
 
+def test_session_can_record_a_pose_already_applied_by_the_adapter():
+    adapter = FakeViewerAdapter()
+    session = ViewerSession(adapter)
+    pose = CameraPose(position=(3.0, 0.0, 4.0))
+
+    session.record_camera_pose(pose)
+
+    assert session.project.camera == pose
+    assert session.is_dirty
+    assert adapter.calls == []
+
+
+def test_session_does_not_commit_camera_when_adapter_rejects_it():
+    class RejectingAdapter(FakeViewerAdapter):
+        def set_camera_pose(self, pose):
+            self.calls.append("camera")
+            raise ValueError("camera position and target must be different")
+
+    adapter = RejectingAdapter()
+    session = ViewerSession(adapter)
+    original = session.project
+    invalid = CameraPose(position=(0.0, 0.0, 0.0), target=(0.0, 0.0, 0.0))
+
+    try:
+        session.set_camera_pose(invalid)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("adapter rejection must be propagated")
+
+    assert session.project == original
+    assert session.is_dirty is False
+
+
 def test_mark_clean_clears_only_edit_state_without_resetting_project():
     adapter = FakeViewerAdapter()
     session = ViewerSession(adapter)
