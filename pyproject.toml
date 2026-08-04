@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "camera-system-core"
+version = "0.1.0"
+description = "Unified Qt application shell and service contracts for the camera system"
+requires-python = ">=3.8"
+dependencies = []
+
+[project.scripts]
+camera-system = "camera_system_app.main:main"
+
+[project.optional-dependencies]
+txrx = [
+    "pydantic>=2.0,<3",
+    "PyYAML>=6.0,<7",
+    "requests>=2.22,<3",
+]
+viewer = [
+    "numpy",
+    "PyOpenGL",
+    "meshio>=5",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = [
+    "src",
+    "multiwebcam/src",
+    "Tx_Rx",
+    "3DGSviewer/q3dviewer",
+]
+addopts = "-ra"
+markers = [
+    "hardware: requires physical camera hardware",
+    "hardware_gl: requires the Jetson OpenGL stack and a display",
+    "integration: exercises more than one project boundary",
+]

@@ -1,0 +1,3 @@
+# Conventional production dependency entry point.
+# Jetson/Ubuntu still owns Qt, OpenCV, CUDA, TensorRT and Torch.
+-r requirements/jetson.txt

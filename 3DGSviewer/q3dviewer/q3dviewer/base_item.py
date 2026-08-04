@@ -61,6 +61,10 @@ class BaseItem(QObject):
         """Update size-dependent OpenGL resources while the context is current."""
         pass
 
+    def release_gl(self):
+        """Release owned OpenGL resources while the context is current."""
+        self._initialized = False
+
     def paint(self):
         """
         Render the item using OpenGL.
@@ -70,5 +74,4 @@ class BaseItem(QObject):
 
     def disable_setting(self):
         self._disable_setting = True
-
 

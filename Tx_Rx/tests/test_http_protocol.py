@@ -37,6 +37,8 @@ class _State:
     bad_task_id = False
     truncate_chunk = False
     reconstruct_error = False
+    upload_count = 0
+    reconstruct_count = 0
     ranges = []
     if_ranges = []
 
@@ -109,6 +111,7 @@ def _handler(state):
 
         def do_POST(self):
             if self.path == "/upload":
+                state.upload_count += 1
                 form = cgi.FieldStorage(
                     fp=self.rfile,
                     headers=self.headers,
@@ -123,6 +126,7 @@ def _handler(state):
             length = int(self.headers.get("Content-Length", "0"))
             payload = json.loads(self.rfile.read(length) or b"{}")
             if self.path == "/reconstruct":
+                state.reconstruct_count += 1
                 state.reconstruct_called = True
                 if state.reconstruct_error:
                     return self._json({"error": "simulated"}, 500)
@@ -147,6 +151,8 @@ def wsl_server():
         setattr(state, name, b"" if name != "ack_payload" else None)
     state.ranges = []
     state.if_ranges = []
+    state.upload_count = 0
+    state.reconstruct_count = 0
     for name in ("reconstruct_called", "reconstruct_error", "bad_chunk_hash", "bad_file_hash", "bad_file_size", "bad_capture_id", "bad_task_id", "truncate_chunk"):
         setattr(state, name, False)
     server = ThreadingHTTPServer(("127.0.0.1", 0), _handler(state))

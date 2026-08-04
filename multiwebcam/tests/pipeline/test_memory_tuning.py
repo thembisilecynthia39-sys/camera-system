@@ -26,9 +26,16 @@ def test_alignment_monitor_drains_metadata_without_frame_payload():
     assert queue.empty()
 
 
-def test_capture_session_uses_small_alignment_queue_and_fps_scaled_recording_queue():
-    source = FrameSource("/dev/video0", FrameSourceConfig(fps=30))
-    session = CaptureSession([source], recording_buffer_seconds=6.0)
+def test_capture_session_bounds_recording_queue_by_time_and_bytes():
+    source = FrameSource(
+        "/dev/video0",
+        FrameSourceConfig(resolution=(1280, 720), fps=30),
+    )
+    session = CaptureSession(
+        [source],
+        recording_buffer_seconds=6.0,
+        recording_buffer_bytes_per_camera=96 * 1024 * 1024,
+    )
 
-    assert session._recording_queue_capacity(source) == 180
+    assert session._recording_queue_capacity(source) == 36
     assert session._alignment_queue_capacity(source) == 30

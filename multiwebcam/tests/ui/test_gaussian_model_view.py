@@ -6,6 +6,8 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
+from PySide6.QtCore import QPoint, Qt
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
 import multiwebcam.ui.views.gaussian_model_view as gaussian_view
@@ -76,6 +78,29 @@ def test_inactive_view_stops_warmup_timer(qapp):
     view.set_active(False)
 
     assert not view._render_timer.isActive()
+    view.shutdown()
+
+
+def test_plain_model_click_does_not_start_interaction_or_warmup(qapp):
+    view = gaussian_view.GaussianModelView()
+    view._ensure_renderer()
+
+    QTest.mousePress(
+        view._gl_widget,
+        Qt.MouseButton.LeftButton,
+        pos=QPoint(20, 20),
+    )
+    QTest.mouseRelease(
+        view._gl_widget,
+        Qt.MouseButton.LeftButton,
+        pos=QPoint(20, 20),
+    )
+    qapp.processEvents()
+
+    assert not view._interacting
+    assert view._warmup_frames == 0
+    assert not view._render_timer.isActive()
+    assert not view._gl_widget.enable_depth_picking
     view.shutdown()
 
 

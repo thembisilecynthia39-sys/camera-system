@@ -5,25 +5,25 @@ from __future__ import annotations
 import logging
 import time
 from pathlib import Path
+from threading import Event
 
-from PySide6.QtCore import QObject, QThread, QTimer, Signal
+from PySide6.QtCore import QObject, QThread, QTimer, Qt, Signal
 from PySide6.QtGui import QPixmap
 
 from multiwebcam.pipeline.session import CaptureSession
 from multiwebcam.profiles.settings import InferenceSettings
-from multiwebcam.quality.metrics import (
-    CaptureSetQuality,
-    ObjectRegion,
-    detect_primary_object,
-    evaluate_capture_set,
-    evaluate_frame,
-)
+from multiwebcam.quality.metrics import CaptureSetQuality, ObjectRegion
 from multiwebcam.recognition import AsyncObjectDetector, InferenceStatus, create_detector
 from multiwebcam.sources.config import FrameSourceConfig
-from multiwebcam.sources.controls import V4L2Control, query_controls, set_control
+from multiwebcam.sources.controls import V4L2Control
 from multiwebcam.sources.discovery import FrameSourceOptions
 from multiwebcam.sources.frame_packet import FramePacket
-from multiwebcam.ui.conversion import frame_to_pixmap
+from multiwebcam.ui.control_worker import CameraControlWorker
+from multiwebcam.ui.preview_workers import (
+    PreviewRequest,
+    PreviewWorker,
+    QualityWorker,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -46,14 +46,85 @@ class _StopRecordingWorker(QThread):
     def __init__(self, session: CaptureSession) -> None:
         super().__init__()
         self._session = session
+        self.succeeded = False
+        self.error_message: str | None = None
 
     def run(self) -> None:
         try:
             result = self._session.stop_recording()
-        except Exception:
+            self.succeeded = result is not None
+        except Exception as exc:
             logger.exception("Error during recording stop")
+            self.error_message = str(exc)
             result = None
         self.stop_completed.emit(result)
+
+
+class _DetectorInitWorker(QThread):
+    """Create a potentially slow TensorRT backend away from the GUI thread."""
+
+    loaded = Signal(object, object)  # ObjectDetector, effective InferenceSettings
+    failed = Signal(str)
+
+    def __init__(self, settings: InferenceSettings) -> None:
+        super().__init__()
+        self._settings = settings
+        self._cancel_event = Event()
+
+    def cancel(self) -> None:
+        self._cancel_event.set()
+        self.requestInterruption()
+
+    def run(self) -> None:
+        try:
+            detector = create_detector(
+                self._settings,
+                cancel_event=self._cancel_event,
+            )
+            effective_settings = self._settings
+        except Exception:
+            if self._cancel_event.is_set():
+                return
+            logger.exception(
+                "Failed to initialize inference backend %s, falling back to heuristic",
+                self._settings.backend,
+            )
+            try:
+                effective_settings = InferenceSettings()
+                detector = create_detector(effective_settings)
+            except Exception as fallback_exc:
+                self.failed.emit(str(fallback_exc))
+                return
+        if self._cancel_event.is_set():
+            close = getattr(detector, "close", None)
+            if callable(close):
+                close()
+            return
+        self.loaded.emit(detector, effective_settings)
+
+
+class _DetectorReleaseWorker(QThread):
+    """Release inference and camera/decode GPU contexts off the GUI thread."""
+
+    released = Signal(bool)
+
+    def __init__(
+        self,
+        detector: AsyncObjectDetector | None,
+        session: CaptureSession,
+    ) -> None:
+        super().__init__()
+        self._detector = detector
+        self._session = session
+
+    def run(self) -> None:
+        inference_released = (
+            self._detector.stop(timeout=3.0)
+            if self._detector is not None
+            else True
+        )
+        cameras_released = self._session.suspend_all(timeout=3.0)
+        self.released.emit(inference_released and cameras_released)
 
 
 class CapturePresenter(QObject):
@@ -69,6 +140,7 @@ class CapturePresenter(QObject):
     alignment_updated = Signal(object)  # AlignmentStats
     quality_updated = Signal(object, object)  # dict[int, FrameQuality], CaptureSetQuality
     inference_status_updated = Signal(object)  # InferenceStatus
+    model_resources_released = Signal(bool)
 
     # Focus mode display
     frame_ready = Signal(QPixmap)
@@ -92,6 +164,7 @@ class CapturePresenter(QObject):
     recording_stopped = Signal()  # stop complete
     recording_duration = Signal(float)  # elapsed seconds
     recording_queue_depth = Signal(object)  # dict[int, int]: source_id -> depth
+    recording_failed = Signal(str)
 
     def __init__(
         self,
@@ -134,17 +207,36 @@ class CapturePresenter(QObject):
         self._last_inference_submit_by_path: dict[str, float] = {}
         self._last_quality_emit_time = 0.0
         self._last_slow_poll_log_time = 0.0
+        self._shutting_down = False
+        self._restore_deadline = 0.0
+        self._detector_init_worker: _DetectorInitWorker | None = None
+        self._detector_release_worker: _DetectorReleaseWorker | None = None
+        self._object_detector: AsyncObjectDetector | None = None
         self._quality_interval_seconds = 0.5
-        try:
-            self._object_detector = AsyncObjectDetector(create_detector(self._inference_settings))
-        except Exception:
-            logger.exception(
-                "Failed to initialize inference backend %s, falling back to heuristic",
-                self._inference_settings.backend,
-            )
-            fallback = InferenceSettings()
-            self._inference_settings = fallback
-            self._object_detector = AsyncObjectDetector(create_detector(fallback))
+        self._preview_worker = PreviewWorker(parent=self)
+        self._preview_worker.images_ready.connect(
+            self._on_preview_images_ready,
+            Qt.ConnectionType.QueuedConnection,
+        )
+        self._quality_worker = QualityWorker(parent=self)
+        self._quality_worker.quality_ready.connect(
+            self._on_quality_ready,
+            Qt.ConnectionType.QueuedConnection,
+        )
+        self._control_worker = CameraControlWorker(parent=self)
+        self._control_worker.controls_ready.connect(
+            self._on_controls_ready,
+            Qt.ConnectionType.QueuedConnection,
+        )
+        self._control_worker.control_applied.connect(
+            self._on_control_applied,
+            Qt.ConnectionType.QueuedConnection,
+        )
+        self._control_worker.defaults_restored.connect(
+            self._on_defaults_restored,
+            Qt.ConnectionType.QueuedConnection,
+        )
+        self._start_detector_initialization()
 
     @property
     def focused_device_path(self) -> str | None:
@@ -185,28 +277,41 @@ class CapturePresenter(QObject):
         """Switch to grid mode -- resume all cameras, start grid polling."""
         if self._session.is_recording or self._stop_worker is not None:
             raise RuntimeError("Cannot switch mode while recording or stopping")
-        self._session.resume_all()
+        was_gpu_handoff = self._mode in {"model", "quiescing", "restoring"}
         self._focused_device_path = None
         self._focused_source_id = None
+        if was_gpu_handoff:
+            self._mode = "restoring"
+            self._timer.stop()
+            if self._detector_release_worker is None:
+                self._begin_capture_restore()
+            return
+        self._session.resume_all()
         self._mode = "grid"
         self._timer.start(self._grid_poll_ms)
+        self._start_detector_initialization()
 
     def enter_model_mode(self) -> None:
         """Pause camera production and preview analysis for the 3DGS workspace."""
         if self._session.is_recording or self._stop_worker is not None:
             raise RuntimeError("Cannot enter model mode while recording or stopping")
         self._timer.stop()
+        self._preview_worker.clear_pending()
+        self._quality_worker.clear_pending()
         for device_path in self._session.active_device_paths:
             self._session.pause_producer(device_path)
         self._focused_device_path = None
         self._focused_source_id = None
-        self._mode = "model"
+        self._mode = "quiescing"
+        self._begin_detector_release()
 
     def pause_video_transmission(self) -> None:
         """Pause all camera producers while remaining in the capture workspace."""
         if self._session.is_recording or self._stop_worker is not None:
             raise RuntimeError("Cannot pause video while recording or stopping")
         self._timer.stop()
+        self._preview_worker.clear_pending()
+        self._quality_worker.clear_pending()
         for device_path in self._session.active_device_paths:
             self._session.pause_producer(device_path)
         self._mode = "paused"
@@ -229,6 +334,7 @@ class CapturePresenter(QObject):
         self._current_config = current_config
         self._mode = "focus"
         self._timer.start(self._focus_poll_ms)
+        self._start_detector_initialization()
 
         if source_options is not None and current_config is not None:
             self._emit_initial_capabilities()
@@ -262,7 +368,10 @@ class CapturePresenter(QObject):
         """Stop recording asynchronously. Emits recording_stopping immediately."""
         if self._stop_worker is not None:
             return
-        if not self._session.is_recording:
+        if (
+            not self._session.is_recording
+            and not self._session.has_pending_recording
+        ):
             return
 
         self.recording_stopping.emit()
@@ -272,23 +381,70 @@ class CapturePresenter(QObject):
 
     def _on_stop_complete(self, result: object) -> None:
         """Handle async stop completion on main thread."""
-        if self._stop_worker is not None:
-            self._stop_worker.wait()
+        worker = self._stop_worker
+        if worker is not None:
+            worker.wait()
             self._stop_worker = None
         self._recording_device_paths = []
         self._recording_start_time = None
+        errors = getattr(result, "errors", ()) if result is not None else ()
+        if errors:
+            self.recording_failed.emit("; ".join(str(error) for error in errors))
+        elif result is None and worker is not None and worker.error_message:
+            self.recording_failed.emit(worker.error_message)
         self.recording_stopped.emit()
 
-    def shutdown(self) -> None:
+    def shutdown(self, timeout_ms: int = 5000) -> bool:
         """Stop everything. Called once during app close."""
+        self._shutting_down = True
         self._timer.stop()
+        deadline = time.monotonic() + max(0, timeout_ms) / 1000.0
+
+        def remaining_seconds() -> float:
+            return max(0.0, deadline - time.monotonic())
+
+        def remaining_milliseconds() -> int:
+            return max(0, int(remaining_seconds() * 1000))
+
+        if not self._preview_worker.stop(remaining_seconds()):
+            return False
+        if not self._quality_worker.stop(remaining_seconds()):
+            return False
+        if not self._control_worker.stop(remaining_seconds()):
+            return False
         if self._stop_worker is not None:
-            self._stop_worker.wait()
+            self._stop_worker.requestInterruption()
+            if not self._stop_worker.wait(remaining_milliseconds()):
+                return False
             self._stop_worker = None
-        if self._session.is_recording:
-            self._session.stop_recording()
-        self._object_detector.stop()
+        if (
+            self._stop_worker is None
+            and (self._session.is_recording or self._session.has_pending_recording)
+        ):
+            self._stop_worker = _StopRecordingWorker(self._session)
+            self._stop_worker.start()
+        if self._stop_worker is not None:
+            if not self._stop_worker.wait(remaining_milliseconds()):
+                return False
+            if not self._stop_worker.succeeded:
+                self._stop_worker = None
+                return False
+            self._stop_worker = None
+        if self._detector_init_worker is not None:
+            self._detector_init_worker.cancel()
+            if not self._detector_init_worker.wait(remaining_milliseconds()):
+                return False
+            self._detector_init_worker = None
+        if self._detector_release_worker is not None:
+            if not self._detector_release_worker.wait(remaining_milliseconds()):
+                return False
+            self._detector_release_worker = None
+        if self._object_detector is not None:
+            if not self._object_detector.stop(timeout=remaining_seconds()):
+                return False
+            self._object_detector = None
         self._mode = "idle"
+        return True
 
     # --- Poll ---
 
@@ -303,7 +459,7 @@ class CapturePresenter(QObject):
         poll_start = time.perf_counter()
         self._refresh_detection_results()
         frames = self._session.get_latest_frames()
-        pixmaps = {}
+        preview_requests: dict[int, PreviewRequest] = {}
         packets_for_quality: dict[str, FramePacket] = {}
         for device_path, packet in frames.items():
             if packet is not None and device_path in self._source_id_lookup:
@@ -316,9 +472,12 @@ class CapturePresenter(QObject):
                     object_region = self._latest_object_regions_by_path[device_path]
                 elif device_path in self._latest_frame_qualities_by_path:
                     object_region = self._latest_frame_qualities_by_path[device_path].object_region
-                pixmaps[source_id] = frame_to_pixmap(packet.frame, mirror=self._mirror, object_region=object_region)
-        if pixmaps:
-            self.frames_ready.emit(pixmaps)
+                preview_requests[source_id] = PreviewRequest(
+                    frame=packet.frame,
+                    mirror=self._mirror,
+                    object_region=object_region,
+                )
+        self._preview_worker.submit(preview_requests)
 
         if packets_for_quality and time.monotonic() - self._last_quality_emit_time >= self._quality_interval_seconds:
             self._emit_quality_update()
@@ -355,9 +514,17 @@ class CapturePresenter(QObject):
                 self._latest_packets_by_path[self._focused_device_path] = packet
                 self._submit_for_detection(self._focused_device_path, packet)
             object_region = self._latest_object_regions_by_path.get(packet.device_path)
-            if object_region is None:
-                object_region = evaluate_frame(packet.frame).object_region
-            self.frame_ready.emit(frame_to_pixmap(packet.frame, mirror=self._mirror, object_region=object_region))
+            if self._focused_source_id is not None:
+                self._preview_worker.submit(
+                    {
+                        self._focused_source_id: PreviewRequest(
+                            frame=packet.frame,
+                            mirror=self._mirror,
+                            object_region=object_region,
+                            max_size=(1280, 720),
+                        )
+                    }
+                )
 
         stats = self._session.get_camera_stats()
         if stats and self._focused_device_path in stats:
@@ -370,7 +537,31 @@ class CapturePresenter(QObject):
         if not packets:
             return
         self._refresh_detection_results()
-        quality = evaluate_capture_set(packets, object_regions=self._object_regions_for_quality(packets))
+        self._quality_worker.submit(
+            packets,
+            self._object_regions_for_quality(packets),
+        )
+
+    def _on_preview_images_ready(self, images: object) -> None:
+        if not isinstance(images, dict):
+            return
+        if self._mode == "focus" and self._focused_source_id in images:
+            self.frame_ready.emit(
+                QPixmap.fromImage(images[self._focused_source_id])
+            )
+            return
+        if self._mode != "grid":
+            return
+        pixmaps = {
+            int(source_id): QPixmap.fromImage(image)
+            for source_id, image in images.items()
+        }
+        if pixmaps:
+            self.frames_ready.emit(pixmaps)
+
+    def _on_quality_ready(self, quality: object) -> None:
+        if self._mode != "grid" or not isinstance(quality, CaptureSetQuality):
+            return
         self._latest_quality = quality
         self._latest_frame_qualities_by_path = dict(quality.frame_qualities)
         quality_by_id = {
@@ -381,6 +572,8 @@ class CapturePresenter(QObject):
         self.quality_updated.emit(quality_by_id, quality)
 
     def _submit_for_detection(self, device_path: str, packet: FramePacket) -> None:
+        if self._object_detector is None:
+            return
         interval_seconds = max(0.0, self._inference_settings.interval_ms / 1000.0)
         now = time.monotonic()
         last_submit = self._last_inference_submit_by_path.get(device_path, 0.0)
@@ -390,6 +583,9 @@ class CapturePresenter(QObject):
         self._object_detector.submit(device_path, packet.frame, packet.frame_index)
 
     def _refresh_detection_results(self) -> None:
+        if self._object_detector is None:
+            self._emit_inference_status(set(self._source_id_lookup))
+            return
         results = self._object_detector.results()
         now = time.monotonic()
         active_paths = set(self._source_id_lookup)
@@ -430,20 +626,167 @@ class CapturePresenter(QObject):
             for path in active_paths
             if path in self._latest_detection_backend_by_path
         }
-        backend = ", ".join(sorted(backends)) if backends else self._object_detector.backend_name
+        backend = ", ".join(sorted(backends))
+        if not backend:
+            backend = (
+                self._object_detector.backend_name
+                if self._object_detector is not None
+                else self._inference_settings.backend
+            )
         status = InferenceStatus(
             backend=backend,
             active_count=active_count,
             detected_count=detected_count,
             latency_ms=sum(latencies) / len(latencies) if latencies else None,
-            warming=bool(active_count and not latencies),
+            warming=bool(
+                active_count
+                and (
+                    not latencies
+                    or self._object_detector is None
+                    or self._detector_init_worker is not None
+                )
+            ),
         )
         self.inference_status_updated.emit(status)
+
+    def _start_detector_initialization(self) -> None:
+        if (
+            self._shutting_down
+            or self._mode in {"model", "quiescing"}
+            or self._object_detector is not None
+            or self._detector_init_worker is not None
+            or self._detector_release_worker is not None
+        ):
+            return
+        worker = _DetectorInitWorker(self._inference_settings)
+        worker.loaded.connect(
+            self._on_detector_loaded,
+            Qt.ConnectionType.QueuedConnection,
+        )
+        worker.failed.connect(
+            self._on_detector_init_failed,
+            Qt.ConnectionType.QueuedConnection,
+        )
+        worker.finished.connect(
+            lambda current=worker: self._on_detector_init_finished(current)
+        )
+        self._detector_init_worker = worker
+        worker.start()
+        self._emit_inference_status(set(self._source_id_lookup))
+
+    def _on_detector_loaded(
+        self,
+        detector: object,
+        effective_settings: object,
+    ) -> None:
+        if not isinstance(effective_settings, InferenceSettings):
+            return
+        async_detector = AsyncObjectDetector(detector)
+        if self._shutting_down or self._mode in {"model", "quiescing"}:
+            self._release_detector(async_detector)
+            return
+        self._inference_settings = effective_settings
+        self._object_detector = async_detector
+
+    def _on_detector_init_failed(self, error: str) -> None:
+        logger.error("Inference initialization failed: %s", error)
+
+    def _on_detector_init_finished(self, worker: _DetectorInitWorker) -> None:
+        if self._detector_init_worker is worker:
+            self._detector_init_worker = None
+        worker.deleteLater()
+        if self._mode == "quiescing" and self._detector_release_worker is None:
+            self._release_detector(None)
+        else:
+            self._start_detector_initialization()
+
+    def _begin_detector_release(self) -> None:
+        if self._detector_init_worker is not None:
+            self._detector_init_worker.cancel()
+        detector = self._object_detector
+        self._object_detector = None
+        if detector is not None:
+            self._release_detector(detector)
+            return
+        if self._detector_init_worker is None:
+            self._release_detector(None)
+
+    def _release_detector(
+        self,
+        detector: AsyncObjectDetector | None,
+    ) -> None:
+        worker = _DetectorReleaseWorker(detector, self._session)
+        worker.released.connect(
+            self._on_detector_released,
+            Qt.ConnectionType.QueuedConnection,
+        )
+        worker.finished.connect(lambda current=worker: current.deleteLater())
+        self._detector_release_worker = worker
+        worker.start()
+
+    def _on_detector_released(self, succeeded: bool) -> None:
+        self._detector_release_worker = None
+        if self._mode == "quiescing":
+            if self._detector_init_worker is None:
+                self._finish_model_quiesce(succeeded)
+            return
+        if self._mode == "restoring":
+            self._begin_capture_restore()
+            return
+        if self._mode in {"grid", "focus"}:
+            self._session.resume_all()
+        self._start_detector_initialization()
+
+    def _finish_model_quiesce(self, succeeded: bool) -> None:
+        cameras_released = self._session.all_producers_quiesced
+        released = bool(succeeded and cameras_released)
+        if released:
+            self._mode = "model"
+        else:
+            logger.error(
+                "3DGS GPU handoff incomplete: inference_released=%s cameras_released=%s",
+                succeeded,
+                cameras_released,
+            )
+        self.model_resources_released.emit(released)
+
+    def _begin_capture_restore(self) -> None:
+        if self._mode != "restoring":
+            return
+        self._session.resume_all()
+        self._restore_deadline = time.monotonic() + 3.0
+        QTimer.singleShot(25, self._check_capture_restored)
+
+    def _check_capture_restored(self) -> None:
+        if self._mode != "restoring":
+            return
+        if (
+            not self._session.producers_healthy
+            and time.monotonic() < self._restore_deadline
+        ):
+            QTimer.singleShot(25, self._check_capture_restored)
+            return
+        if not self._session.producers_healthy:
+            logger.warning("Camera pipelines did not become ready within restore deadline")
+        self._mode = "grid"
+        self._timer.start(self._grid_poll_ms)
+        self._start_detector_initialization()
 
     def _poll_recording(self) -> None:
         """Emit recording signals. Works during both recording and drain."""
         is_recording = self._session.is_recording
         is_draining = self._stop_worker is not None
+
+        if (
+            self._session.recording_overflowed
+            and self._session.has_pending_recording
+            and not is_draining
+        ):
+            self.recording_failed.emit(
+                "编码速度不足，录像已自动中止；摄像头采集未被阻塞"
+            )
+            self.stop_recording()
+            is_draining = self._stop_worker is not None
 
         if not is_recording and not is_draining:
             return
@@ -460,15 +803,34 @@ class CapturePresenter(QObject):
                 depths_by_id = {self._source_id_lookup[p]: d for p, d in depths.items() if p in self._source_id_lookup}
                 self.recording_queue_depth.emit(depths_by_id)
 
+    def runtime_metrics(self) -> dict[str, object]:
+        """Snapshot scheduling/backpressure state for diagnostics."""
+        detector = self._object_detector
+        metrics = dict(self._session.pipeline_metrics())
+        metrics.update(
+            {
+                "inference_pending": (
+                    detector.pending_count if detector is not None else 0
+                ),
+                "inference_in_flight": (
+                    detector.in_flight if detector is not None else False
+                ),
+                "inference_replaced_pending": (
+                    detector.replaced_pending_count
+                    if detector is not None
+                    else 0
+                ),
+                "mode": self._mode,
+            }
+        )
+        return metrics
+
     # --- Focus mode capabilities ---
 
     def _object_regions_for_quality(self, packets: dict[str, FramePacket]) -> dict[str, ObjectRegion | None]:
         regions: dict[str, ObjectRegion | None] = {}
-        for path, packet in packets.items():
-            region = self._latest_object_regions_by_path.get(path)
-            if region is None:
-                region = detect_primary_object(packet.frame)
-            regions[path] = region
+        for path in packets:
+            regions[path] = self._latest_object_regions_by_path.get(path)
         return regions
 
     def _emit_initial_capabilities(self) -> None:
@@ -514,20 +876,39 @@ class CapturePresenter(QObject):
     def _emit_controls(self) -> None:
         if self._focused_device_path is None:
             return
-        controls = query_controls(self._focused_device_path)
+        self._control_worker.query(self._focused_device_path)
+
+    def _on_controls_ready(self, device_path: str, controls: object) -> None:
+        if device_path != self._focused_device_path or not isinstance(controls, list):
+            return
         self._current_controls = controls
         self.controls_ready.emit(controls)
 
     def on_control_changed(self, name: str, value: int) -> None:
-        if self._focused_device_path and set_control(self._focused_device_path, name, value):
+        if self._focused_device_path:
+            self._control_worker.set_value(self._focused_device_path, name, value)
+
+    def _on_control_applied(
+        self,
+        device_path: str,
+        name: str,
+        value: int,
+        succeeded: bool,
+    ) -> None:
+        if succeeded and device_path == self._focused_device_path:
             self.control_persist_requested.emit(name, value)
 
     def on_restore_defaults(self) -> None:
         if self._focused_device_path is None:
             return
-        for ctrl in self._current_controls:
-            if ctrl.default is not None:
-                set_control(self._focused_device_path, ctrl.name, ctrl.default)
+        self._control_worker.restore_defaults(
+            self._focused_device_path,
+            self._current_controls,
+        )
+
+    def _on_defaults_restored(self, device_path: str) -> None:
+        if device_path != self._focused_device_path:
+            return
         self.controls_cleared.emit()
         self._emit_controls()
 

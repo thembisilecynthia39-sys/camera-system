@@ -3,8 +3,16 @@ import json
 import zipfile
 
 import pytest
+import requests
 
-from tx_rx.jetson_client import CaptureDataError, TaskUploadError, prepare_manual_task, upload_staged_task
+from tx_rx.config import load_config
+from tx_rx.jetson_client import (
+    CaptureDataError,
+    TaskUploadError,
+    check_health,
+    prepare_manual_task,
+    upload_staged_task,
+)
 
 
 class _Response:
@@ -92,6 +100,76 @@ def test_uploader_accepts_validated_staging_and_starts_reconstruction(tmp_path):
     assert receipt["task_id"] == "task-server-1"
     assert receipt["checksum"] == result.checksum
     assert receipt["server_url"] == "http://wsl-host:8000"
+
+
+def test_health_timeout_checks_cancellation_between_short_attempts(tmp_path):
+    config_path = _config(tmp_path / "config.yaml", tmp_path / "staging")
+    config = load_config(config_path)
+
+    class TimeoutSession:
+        def __init__(self):
+            self.calls = 0
+
+        def get(self, *_args, **_kwargs):
+            self.calls += 1
+            raise requests.Timeout("simulated timeout")
+
+    session = TimeoutSession()
+    checks = iter((False, True))
+
+    with pytest.raises(TaskUploadError, match="cancelled"):
+        check_health(
+            config,
+            session,
+            cancel_check=lambda: next(checks, True),
+        )
+
+    assert session.calls == 1
+
+
+def test_staged_upload_honors_cancellation_before_network(tmp_path):
+    staging_dir = _task(tmp_path / "staging")
+    config = _config(tmp_path / "config.yaml", tmp_path / "staging")
+    session = _Session()
+
+    with pytest.raises(TaskUploadError, match="upload cancelled"):
+        upload_staged_task(
+            staging_dir,
+            config,
+            session,
+            cancel_check=lambda: True,
+        )
+
+    assert session.calls == []
+
+
+def test_staged_upload_honors_cancellation_before_reconstruction(tmp_path):
+    staging_dir = _task(tmp_path / "staging")
+    config = _config(tmp_path / "config.yaml", tmp_path / "staging")
+    cancelled = False
+
+    class CancelAfterUploadSession(_Session):
+        def post(self, url, **kwargs):
+            nonlocal cancelled
+            response = super().post(url, **kwargs)
+            if url.endswith("/upload"):
+                cancelled = True
+            return response
+
+    session = CancelAfterUploadSession()
+
+    with pytest.raises(TaskUploadError, match="upload cancelled"):
+        upload_staged_task(
+            staging_dir,
+            config,
+            session,
+            cancel_check=lambda: cancelled,
+        )
+
+    assert [(method, url) for method, url, _ in session.calls] == [
+        ("GET", "http://wsl-host:8000/health"),
+        ("POST", "http://wsl-host:8000/upload"),
+    ]
 
 
 def test_uploader_accepts_duplicate_task_that_is_already_finished(tmp_path):

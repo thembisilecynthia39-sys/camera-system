@@ -12,7 +12,14 @@ from tx_rx.jetson_client.task_manifest import (
     prepare_manual_task,
 )
 from tx_rx.jetson_client.staging import StagingTask, StagingTaskState, scan_staging_tasks
-from tx_rx.jetson_client.uploader import TaskUploadError, TaskUploadResult, upload_staged_task
+from tx_rx.jetson_client.uploader import (
+    TaskUploadError,
+    TaskUploadResult,
+    check_health,
+    request_reconstruction,
+    upload_staged_task,
+    upload_task_package,
+)
 
 __all__ = [
     "CaptureDataError",
@@ -29,5 +36,8 @@ __all__ = [
     "scan_staging_tasks",
     "TaskUploadError",
     "TaskUploadResult",
+    "check_health",
+    "request_reconstruction",
     "upload_staged_task",
+    "upload_task_package",
 ]

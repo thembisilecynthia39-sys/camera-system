@@ -206,6 +206,9 @@ class SystemStatusBar(QFrame):
         state = "warn" if percent >= 85 else "good"
         self.gpu.set_status(f"GPU {percent:.0f}%", state)
 
+    def shutdown(self) -> None:
+        self._gpu_timer.stop()
+
 
 class ResourceStatusWidget(QFrame):
     """GPU and storage telemetry aligned to the right edge of navigation."""
@@ -241,7 +244,11 @@ class BottomStatusBar(QFrame):
         2: ("Jetson", "10.150.64.23"),
     }
 
-    def __init__(self, parent: QWidget | None = None):
+    def __init__(
+        self,
+        parent: QWidget | None = None,
+        enable_network_checks: bool = True,
+    ):
         super().__init__(parent)
         self.setObjectName("bottomStatusBar")
         self.setFixedHeight(56)
@@ -282,13 +289,21 @@ class BottomStatusBar(QFrame):
         network_layout.addStretch()
         self._cells.insert(1, network_cell)
         layout.insertWidget(1, network_cell, stretch=2)
+        network_cell.setVisible(enable_network_checks)
 
         self._ping_processes: dict[int, QProcess] = {}
+        self._network_checks_enabled = enable_network_checks
+        self._network_checks_started = False
         self._ping_timer = QTimer(self)
         self._ping_timer.setInterval(5000)
         self._ping_timer.timeout.connect(self.refresh_client_pings)
-        self._ping_timer.start()
-        QTimer.singleShot(0, self.refresh_client_pings)
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        if self._network_checks_enabled and not self._network_checks_started:
+            self._network_checks_started = True
+            self._ping_timer.start()
+            self.refresh_client_pings()
 
     def set_compact(self, compact: bool) -> None:
         self._cells[1].setVisible(not compact)
@@ -331,11 +346,28 @@ class BottomStatusBar(QFrame):
         if process is None:
             return
 
-        output = bytes(process.readAllStandardOutput()).decode("utf-8", errors="replace")
+        try:
+            output = bytes(process.readAllStandardOutput()).decode("utf-8", errors="replace")
+        except RuntimeError:
+            return
         match = re.search(r"time[=<]([0-9]+(?:\.[0-9]+)?)\s*ms", output)
         latency_ms = float(match.group(1)) if exit_code == 0 and match else None
         self.set_client_ping(client, latency_ms)
         process.deleteLater()
+
+    def shutdown(self) -> None:
+        """Stop optional probes before the containing capture view is deleted."""
+        self._ping_timer.stop()
+        self._network_checks_started = False
+        processes = list(self._ping_processes.values())
+        self._ping_processes.clear()
+        for process in processes:
+            try:
+                process.kill()
+                process.waitForFinished(1000)
+            except RuntimeError:
+                pass
+            process.deleteLater()
 
     def set_sync(self, spread_ms: float, good: bool) -> None:
         self.sync.set_status(f"系统同步 {spread_ms:.1f} ms", "good" if good else "warn")

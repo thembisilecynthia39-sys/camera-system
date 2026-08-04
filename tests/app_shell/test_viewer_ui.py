@@ -1,0 +1,449 @@
+"""Offscreen behavior tests for the 3DGS studio toolbar and Inspector."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QLabel, QToolButton, QWidget
+
+from camera_system_app.domain.viewer import (
+    AppearanceSettings,
+    CameraBookmark,
+    CameraMode,
+    CameraPose,
+    DisplayMode,
+    DisplaySettings,
+)
+from camera_system_app.ui.pages import ResultViewerPage
+from camera_system_app.ui.widgets.viewer_inspector import ViewerInspector
+from camera_system_app.ui.widgets.viewer_toolbar import ViewerToolbar
+from camera_system_app.ui.widgets.viewer_timeline import ViewerTimelineWidget
+
+
+def test_viewer_toolbar_exposes_core_roaming_and_presentation_actions(qapp):
+    toolbar = ViewerToolbar()
+    names = {button.text() for button in toolbar.findChildren(QToolButton)}
+
+    assert {"打开", "重置", "适配", "保存", "另存", "环视", "参数", "演示", "导出"} <= names
+    assert {"播放", "停止", "时间轴"}.isdisjoint(names)
+    assert toolbar.display_mode_combo.findData(DisplayMode.STANDARD.value) >= 0
+    assert toolbar.display_mode_combo.findData(DisplayMode.SPHERE_WIREFRAME.value) >= 0
+    assert toolbar.display_mode_combo.findData(DisplayMode.OVERLAY.value) >= 0
+    assert toolbar.quality_combo.count() >= 3
+    assert toolbar.view_preset_combo.findData("front") >= 0
+
+
+def test_result_viewer_removes_timeline_and_frame_controls(qapp, tmp_path):
+    toolbar = ViewerToolbar()
+    names = {button.text() for button in toolbar.findChildren(QToolButton)}
+
+    assert {"播放", "停止", "时间轴"}.isdisjoint(names)
+    assert {"环视", "参数", "演示", "导出"} <= names
+
+    page = ResultViewerPage(str(tmp_path / "results"), str(tmp_path / "viewer"))
+
+    assert not hasattr(page, "_timeline")
+    assert page._viewer_layout.count() == 2
+    assert not hasattr(page._toolbar, "play_button")
+    assert not hasattr(page._toolbar, "stop_button")
+    assert not hasattr(page._toolbar, "timeline_button")
+    page.deleteLater()
+
+
+def test_viewer_toolbar_emits_mode_and_panorama_signals(qapp):
+    toolbar = ViewerToolbar()
+    modes = []
+    panorama = []
+    toolbar.display_mode_changed.connect(modes.append)
+    toolbar.panorama_requested.connect(panorama.append)
+
+    toolbar.display_mode_combo.setCurrentIndex(
+        toolbar.display_mode_combo.findData(DisplayMode.SPHERE_SOLID.value)
+    )
+    toolbar.panorama_button.click()
+
+    assert modes == [DisplayMode.SPHERE_SOLID.value]
+    assert panorama == [True]
+
+
+def test_viewer_toolbar_syncing_panorama_state_does_not_emit_commands(qapp):
+    toolbar = ViewerToolbar()
+    commands = []
+    toolbar.panorama_requested.connect(commands.append)
+
+    toolbar.set_panorama_playing(True)
+    toolbar.set_panorama_playing(False)
+
+    assert commands == []
+
+
+def test_viewer_toolbar_emits_standard_view_preset(qapp):
+    toolbar = ViewerToolbar()
+    presets = []
+    toolbar.view_preset_changed.connect(presets.append)
+
+    toolbar.view_preset_combo.setCurrentIndex(
+        toolbar.view_preset_combo.findData("top")
+    )
+
+    assert presets == ["top"]
+
+
+def test_sphere_controls_disable_when_renderer_reports_shader_unavailable(qapp):
+    toolbar = ViewerToolbar()
+    inspector = ViewerInspector()
+
+    toolbar.set_sphere_modes_available(False, "shader unavailable")
+    inspector.set_sphere_modes_available(False, "shader unavailable")
+
+    for combo in (toolbar.display_mode_combo, inspector.display_mode_combo):
+        for value in (DisplayMode.SPHERE_WIREFRAME.value, DisplayMode.SPHERE_SOLID.value, DisplayMode.OVERLAY.value):
+            index = combo.findData(value)
+            assert combo.model().item(index).isEnabled() is False
+        assert combo.currentData() == DisplayMode.STANDARD.value
+    assert inspector.sphere_sigma_multiplier.isEnabled() is False
+    assert inspector.sphere_opacity.isEnabled() is False
+    assert inspector.sphere_line_width.isEnabled() is False
+
+
+def test_viewer_inspector_groups_viewer_controls_into_collapsible_sections(qapp):
+    inspector = ViewerInspector()
+    section_names = {section.title() for section in inspector.sections}
+
+    assert {"视图", "相机", "外观", "渲染"} <= section_names
+    assert inspector.sections[0].is_expanded
+    assert all(section.is_expanded for section in inspector.sections[1:]) is False
+    assert inspector.sphere_sigma_multiplier.value() == 3.0
+    assert inspector.sphere_opacity.value() == 0.5
+
+
+def test_result_page_is_a_clean_viewer_shell_with_right_overlay(qapp, tmp_path):
+    page = ResultViewerPage(str(tmp_path / "results"), str(tmp_path / "viewer"))
+    page.resize(900, 640)
+    page.show()
+    qapp.processEvents()
+
+    assert page._page_header.isVisible() is False
+    assert page._viewer_stage is not None
+
+    viewport = QWidget()
+    viewport.setMinimumSize(480, 320)
+    page.set_viewer_widget(viewport, "scene.ply", 1)
+    qapp.processEvents()
+    before = page._viewer_stage.viewport_rect().size()
+
+    assert page._inspector.is_collapsed is True
+    page._inspector.set_collapsed(False)
+    qapp.processEvents()
+
+    assert page._inspector.width() > 44
+    assert page._inspector.geometry().right() + 1 == page._viewer_stage.width() - 12
+    assert page._viewer_stage.viewport_rect().size() == before
+    page.hide()
+
+
+def test_viewer_inspector_collapses_to_accessible_handle(qapp):
+    inspector = ViewerInspector()
+    changes = []
+    inspector.collapsed_changed.connect(changes.append)
+
+    assert inspector.is_collapsed is True
+    assert inspector.panel_width_for_host(900) == 44
+    inspector.set_collapsed(False)
+
+    assert inspector.is_collapsed is False
+    assert inspector.panel_width_for_host(900) == 320
+    assert changes == [False]
+    assert inspector.collapse_button.accessibleName()
+
+
+def test_toolbar_inspector_button_tracks_expanded_state_without_emitting(qapp):
+    toolbar = ViewerToolbar()
+    commands = []
+    toolbar.inspector_requested.connect(lambda: commands.append("toggle"))
+
+    toolbar.set_inspector_expanded(True)
+
+    assert toolbar.inspector_button.isChecked() is True
+    assert commands == []
+
+
+def test_viewer_inspector_emits_display_settings_with_sphere_defaults(qapp):
+    inspector = ViewerInspector()
+    emitted = []
+    inspector.display_settings_changed.connect(emitted.append)
+
+    inspector.display_mode_combo.setCurrentIndex(
+        inspector.display_mode_combo.findData(DisplayMode.SPHERE_WIREFRAME.value)
+    )
+    inspector.sphere_sigma_multiplier.setValue(4.0)
+
+    assert emitted
+    assert isinstance(emitted[-1], DisplaySettings)
+    assert emitted[-1].mode is DisplayMode.SPHERE_WIREFRAME
+    assert emitted[-1].sphere_sigma_multiplier == 4.0
+
+
+def test_viewer_inspector_can_request_all_spheres_during_interaction(qapp):
+    inspector = ViewerInspector()
+    emitted = []
+    inspector.display_settings_changed.connect(emitted.append)
+
+    inspector.sphere_all_instances.setChecked(True)
+
+    assert emitted
+    assert emitted[-1].sphere_all_instances is True
+
+
+def test_viewer_inspector_exposes_tone_mapping_choices(qapp):
+    inspector = ViewerInspector()
+    emitted = []
+    inspector.appearance_settings_changed.connect(emitted.append)
+
+    inspector.tone_mapping_combo.setCurrentIndex(
+        inspector.tone_mapping_combo.findData("reinhard")
+    )
+
+    assert emitted
+    assert emitted[-1].tone_mapping == "reinhard"
+
+
+def test_viewer_inspector_exposes_sh_degree_choices(qapp):
+    inspector = ViewerInspector()
+    emitted = []
+    inspector.appearance_settings_changed.connect(emitted.append)
+
+    inspector.sh_degree_combo.setCurrentIndex(
+        inspector.sh_degree_combo.findData(1)
+    )
+
+    assert emitted
+    assert isinstance(emitted[-1], AppearanceSettings)
+    assert emitted[-1].sh_degree == 1
+
+
+def test_viewer_inspector_emits_scene_overlay_toggles(qapp):
+    inspector = ViewerInspector()
+    emitted = []
+    inspector.display_settings_changed.connect(emitted.append)
+
+    inspector.show_grid_checkbox.setChecked(True)
+    inspector.show_axis_checkbox.setChecked(True)
+    inspector.show_bounds_checkbox.setChecked(True)
+    inspector.show_center_checkbox.setChecked(True)
+    inspector.show_camera_info_checkbox.setChecked(True)
+
+    assert emitted
+    assert emitted[-1].show_grid is True
+    assert emitted[-1].show_axis is True
+    assert emitted[-1].show_bounds is True
+    assert emitted[-1].show_center is True
+    assert emitted[-1].show_camera_info is True
+
+
+def test_viewer_inspector_emits_editable_background_color(qapp):
+    inspector = ViewerInspector()
+    emitted = []
+    inspector.display_settings_changed.connect(emitted.append)
+
+    inspector.background_color_edit.setText("#336699")
+    inspector.background_color_edit.editingFinished.emit()
+
+    assert emitted
+    assert emitted[-1].background_color == (0.2, 0.4, 0.6)
+
+
+def test_viewer_inspector_disables_transparency_for_mp4_output(qapp):
+    inspector = ViewerInspector()
+
+    inspector.output_kind.setCurrentIndex(
+        inspector.output_kind.findData("mp4")
+    )
+    assert inspector.transparent_background.isEnabled() is False
+    inspector.output_kind.setCurrentIndex(
+        inspector.output_kind.findData("png")
+    )
+    assert inspector.transparent_background.isEnabled() is True
+
+
+def test_viewer_inspector_resolution_presets_update_output_dimensions(qapp):
+    inspector = ViewerInspector()
+
+    inspector.resolution_preset_combo.setCurrentIndex(
+        inspector.resolution_preset_combo.findData("1080p")
+    )
+
+    assert inspector.render_width.value() == 1920
+    assert inspector.render_height.value() == 1080
+
+
+def test_viewer_inspector_current_viewport_resolution_is_a_real_preset(qapp):
+    inspector = ViewerInspector()
+    inspector.set_viewport_size(800, 600)
+
+    inspector.resolution_preset_combo.setCurrentIndex(
+        inspector.resolution_preset_combo.findData("viewport")
+    )
+
+    assert inspector.render_width.value() == 800
+    assert inspector.render_height.value() == 600
+
+
+
+def test_viewer_inspector_exposes_fly_navigation_and_camera_bookmarks(qapp):
+    inspector = ViewerInspector()
+    modes = []
+    speeds = []
+    added = []
+    loaded = []
+    deleted = []
+    inspector.camera_mode_changed.connect(modes.append)
+    inspector.fly_speed_changed.connect(speeds.append)
+    inspector.bookmark_add_requested.connect(added.append)
+    inspector.bookmark_load_requested.connect(loaded.append)
+    inspector.bookmark_delete_requested.connect(deleted.append)
+
+    inspector.camera_mode_combo.setCurrentIndex(
+        inspector.camera_mode_combo.findData(CameraMode.FLY.value)
+    )
+    inspector.fly_speed.setValue(2.5)
+    inspector.bookmark_name_edit.setText("入口")
+    inspector.bookmark_add_button.click()
+
+    pose = CameraPose(position=(1.0, 2.0, 4.0))
+    inspector.set_bookmarks((CameraBookmark("entrance", "入口", pose),))
+    inspector.bookmark_combo.setCurrentIndex(0)
+    inspector.bookmark_load_button.click()
+    inspector.bookmark_delete_button.click()
+
+    assert modes == [CameraMode.FLY.value]
+    assert speeds[-1] == 2.5
+    assert added == ["入口"]
+    assert loaded == ["entrance"]
+    assert deleted == ["entrance"]
+
+
+def test_viewer_inspector_exposes_editable_camera_position_and_target(qapp):
+    inspector = ViewerInspector()
+    emitted = []
+    inspector.camera_pose_changed.connect(emitted.append)
+    pose = CameraPose(
+        position=(1.0, 2.0, 3.0),
+        target=(0.5, 0.25, -1.0),
+        fov_degrees=57.0,
+    )
+
+    inspector.set_camera_pose(pose)
+    inspector.position_x.setValue(4.0)
+
+    assert inspector.position_y.value() == 2.0
+    assert inspector.target_z.value() == -1.0
+    assert emitted[-1].position == (4.0, 2.0, 3.0)
+    assert emitted[-1].target == (0.5, 0.25, -1.0)
+    assert emitted[-1].fov_degrees == 57.0
+
+
+def test_viewer_timeline_can_update_selected_shot_end_from_current_pose(qapp):
+    timeline = ViewerTimelineWidget()
+    first = CameraPose(position=(0.0, 0.0, 5.0))
+    second = CameraPose(position=(2.0, 1.0, 4.0))
+    timeline.set_current_pose(first)
+    timeline.add_button.click()
+    timeline.set_current_pose(second)
+    timeline.update_end_button.click()
+
+    assert timeline.timeline.shots[0].end == second
+
+
+def test_result_page_contains_studio_shell_and_fits_minimum_window(qapp, tmp_path):
+    page = ResultViewerPage(str(tmp_path / "results"), str(tmp_path / "viewer"))
+    page.resize(776, 656)
+    page.show()
+    qapp.processEvents()
+
+    assert page._toolbar.isEnabled() is False
+    assert page._inspector.isVisible() is False
+    assert page._viewer_stage.minimumSize().width() >= 0
+    assert page._toolbar.minimumSizeHint().height() >= 40
+    page.hide()
+
+
+def test_result_page_toolbar_does_not_force_a_wider_than_minimum_window(qapp, tmp_path):
+    page = ResultViewerPage(str(tmp_path / "results"), str(tmp_path / "viewer"))
+    page.resize(720, 600)
+    page.show()
+    qapp.processEvents()
+
+    assert page.minimumSizeHint().width() <= 720
+    page.hide()
+
+
+def test_loaded_result_keeps_the_clean_viewer_shell(qapp, tmp_path):
+    page = ResultViewerPage(str(tmp_path / "results"), str(tmp_path / "viewer"))
+    page.resize(720, 600)
+    page.show()
+    page.set_viewer_widget(QLabel(), "scene.ply", 1)
+    qapp.processEvents()
+
+    assert page._page_header.isVisible() is False
+    assert page._banner.isVisible() is False
+    assert page.minimumSizeHint().height() <= 680
+    page.hide()
+
+
+def test_narrow_viewer_toggles_overlay_without_squeezing_gl(
+    qapp, tmp_path
+):
+    page = ResultViewerPage(str(tmp_path / "results"), str(tmp_path / "viewer"))
+    page.resize(720, 600)
+    page.show()
+    viewport = QWidget()
+    viewport.setMinimumSize(480, 320)
+    page.set_viewer_widget(viewport, "scene.ply", 1)
+    qapp.processEvents()
+
+    assert page._inspector.isVisible()
+    assert page._inspector.is_collapsed is True
+    before = page._viewer_stage.viewport_rect().size()
+    assert page.minimumSizeHint().width() <= 720
+
+    page._toolbar.inspector_button.click()
+    assert page._inspector.is_collapsed is False
+    assert page._viewer_stage.viewport_rect().size() == before
+    page._toolbar.inspector_button.click()
+    assert page._inspector.is_collapsed is True
+    page.hide()
+
+
+def test_sphere_fallback_banner_survives_viewer_widget_activation(qapp, tmp_path):
+    page = ResultViewerPage(str(tmp_path / "results"), str(tmp_path / "viewer"))
+    page.show()
+    page.set_sphere_modes_available(False, "shader unavailable")
+    page.set_viewer_widget(QLabel(), "scene.ply", 1)
+    qapp.processEvents()
+
+    assert page._banner.isVisible() is True
+    assert "外接球显示不可用" in page._banner._text.text()
+    page.hide()
+
+
+def test_result_page_does_not_expose_camera_director_timeline(qapp, tmp_path):
+    page = ResultViewerPage(str(tmp_path / "results"), str(tmp_path / "viewer"))
+    assert not hasattr(page, "_timeline")
+    assert page._viewer_layout.count() == 2
+    page.hide()
+
+
+def test_result_page_marks_unsaved_viewer_project_changes_on_save_action(qapp, tmp_path):
+    page = ResultViewerPage(str(tmp_path / "results"), str(tmp_path / "viewer"))
+    assert page._toolbar.save_button.isEnabled() is False
+    page.set_viewer_widget(QLabel(), "scene.ply", 1)
+
+    page.set_project_dirty(True)
+
+    assert page._toolbar.save_button.isEnabled()
+    assert page._toolbar.save_button.text() == "保存*"
+    page.set_project_dirty(False)
+    assert page._toolbar.save_button.text() == "保存"
+    page.hide()

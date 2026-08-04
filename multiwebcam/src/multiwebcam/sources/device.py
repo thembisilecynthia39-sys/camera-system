@@ -9,13 +9,17 @@ import re
 import cv2
 from collections import deque
 from time import perf_counter, sleep
-from typing import Iterator, Literal
+from typing import Callable, Iterator, Literal
 
 from multiwebcam.sources.config import FrameSourceConfig, FrameSourceStatus
 from multiwebcam.sources.frame_packet import FramePacket
 from multiwebcam.sources.gstreamer import build_jetson_capture_pipeline
 
 logger = logging.getLogger(__name__)
+
+# Four capture threads plus quality/preview workers otherwise inherit
+# OpenCV's full core count independently and oversubscribe the Jetson CPU.
+cv2.setNumThreads(max(1, int(os.environ.get("MULTIWEBCAM_OPENCV_THREADS", "2"))))
 
 _OPENCV_FOURCC = {
     "mjpeg": "MJPG",
@@ -75,14 +79,19 @@ class FrameSource:
     def is_running(self) -> bool:
         return self._is_running
 
-    def start(self) -> FrameSourceStatus:
+    def start(
+        self,
+        cancel_check: Callable[[], bool] | None = None,
+    ) -> FrameSourceStatus:
         if self._is_running:
             return self._build_status()
 
         logger.info(f"Opening {self.device_path} with OpenCV")
         try:
+            self._check_cancel(cancel_check)
             self._open_device()
-            self._consume_warmup_frames()
+            self._check_cancel(cancel_check)
+            self._consume_warmup_frames(cancel_check)
             self._is_running = True
             return self._build_status()
         except Exception:
@@ -130,7 +139,10 @@ class FrameSource:
             self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
             self._cap.set(cv2.CAP_PROP_FPS, self._config.fps)
 
-    def _consume_warmup_frames(self) -> None:
+    def _consume_warmup_frames(
+        self,
+        cancel_check: Callable[[], bool] | None = None,
+    ) -> None:
         if self._cap is None:
             raise FrameSourceError("Device not open")
 
@@ -138,7 +150,9 @@ class FrameSource:
         self._warmup_discarded = 0
 
         while self._warmup_discarded < self._config.warmup_frames:
+            self._check_cancel(cancel_check)
             ret, _frame = self._cap.read()
+            self._check_cancel(cancel_check)
             if ret:
                 self._warmup_discarded += 1
                 continue
@@ -151,6 +165,11 @@ class FrameSource:
                     "or another process using the device"
                 )
             sleep(0.01)
+
+    @staticmethod
+    def _check_cancel(cancel_check: Callable[[], bool] | None) -> None:
+        if cancel_check is not None and cancel_check():
+            raise InterruptedError("camera startup cancelled")
 
     def _cleanup(self) -> None:
         if self._cap is not None:

@@ -14,5 +14,6 @@ QMessageBox.StandardButton = _EnumNamespace(
     No=QMessageBox.No,
     Ok=QMessageBox.Ok,
     Cancel=QMessageBox.Cancel,
+    Save=QMessageBox.Save,
+    Discard=QMessageBox.Discard,
 )
-

@@ -55,6 +55,7 @@ class GLWidget(BaseGLWidget):
         self.followable_item_name = None
         self.setting_window = SettingWindow()
         self.enable_show_center = True
+        self.enable_depth_picking = True
         self.old_center = None
         super(GLWidget, self).__init__()
 
@@ -82,6 +83,9 @@ class GLWidget(BaseGLWidget):
 
     def mouseDoubleClickEvent(self, event):
         """Double click to set center."""
+        if not self.enable_depth_picking:
+            event.accept()
+            return
         p = self.get_point(event.x(), event.y())
         if p is not None:
             self.set_center(p)

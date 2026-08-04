@@ -5,8 +5,10 @@ from __future__ import annotations
 import logging
 import re
 import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 from multiwebcam.sources.config import FrameSourceConfig
 
@@ -21,6 +23,7 @@ _V4L2_TO_FFMPEG: dict[str, str] = {
 }
 
 _FFMPEG_TO_V4L2: dict[str, str] = {v: k for k, v in _V4L2_TO_FFMPEG.items()}
+CancelCheck = Callable[[], bool]
 
 
 def usb_root_bus(bus_info: str) -> str:
@@ -154,7 +157,9 @@ class FrameSourceOptions:
         return (best.width, best.height)
 
 
-def discover_frame_sources() -> list[FrameSourceOptions]:
+def discover_frame_sources(
+    cancel_check: CancelCheck | None = None,
+) -> list[FrameSourceOptions]:
     """Discover all V4L2 video capture devices.
 
     Queries each /dev/video* device, filters out metadata nodes,
@@ -171,7 +176,11 @@ def discover_frame_sources() -> list[FrameSourceOptions]:
     devices = []
     seen_bus_info: set[str] = set()
     for path in sorted(Path("/dev").glob("video*")):
-        options = get_frame_source_options(str(path))
+        _check_cancel(cancel_check)
+        options = get_frame_source_options(
+            str(path),
+            cancel_check=cancel_check,
+        )
         if options is not None:
             if options.bus_info in seen_bus_info:
                 logger.debug(
@@ -187,7 +196,10 @@ def discover_frame_sources() -> list[FrameSourceOptions]:
     return devices
 
 
-def get_frame_source_options(device_path: str) -> FrameSourceOptions | None:
+def get_frame_source_options(
+    device_path: str,
+    cancel_check: CancelCheck | None = None,
+) -> FrameSourceOptions | None:
     """Get options for a specific device.
 
     Args:
@@ -196,7 +208,8 @@ def get_frame_source_options(device_path: str) -> FrameSourceOptions | None:
     Returns:
         FrameSourceOptions if device is a valid capture device, None otherwise.
     """
-    info = _query_device_info(device_path)
+    _check_cancel(cancel_check)
+    info = _query_device_info(device_path, cancel_check)
     if info is None:
         logger.debug(f"{device_path}: Failed to query device info")
         return None
@@ -206,7 +219,7 @@ def get_frame_source_options(device_path: str) -> FrameSourceOptions | None:
         logger.debug(f"{device_path}: Not a capture device")
         return None
 
-    modes = _query_modes(device_path)
+    modes = _query_modes(device_path, cancel_check)
     if not modes:
         # No modes means it's likely a metadata node
         logger.debug(f"{device_path}: No capture modes available (likely metadata node)")
@@ -221,14 +234,16 @@ def get_frame_source_options(device_path: str) -> FrameSourceOptions | None:
     )
 
 
-def _query_device_info(device_path: str) -> tuple[str, str, str, bool] | None:
+def _query_device_info(
+    device_path: str,
+    cancel_check: CancelCheck | None = None,
+) -> tuple[str, str, str, bool] | None:
     """Query basic device info via v4l2-ctl --info, with sysfs fallback."""
     try:
-        result = subprocess.run(
+        result = _run_command(
             ["v4l2-ctl", "-d", device_path, "--info"],
-            capture_output=True,
-            text=True,
             timeout=5,
+            cancel_check=cancel_check,
         )
         if result.returncode != 0:
             return None
@@ -259,14 +274,16 @@ def _query_device_info(device_path: str) -> tuple[str, str, str, bool] | None:
         return _query_device_info_from_sysfs(device_path)
 
 
-def _query_modes(device_path: str) -> list[VideoMode]:
+def _query_modes(
+    device_path: str,
+    cancel_check: CancelCheck | None = None,
+) -> list[VideoMode]:
     """Query supported modes via v4l2-ctl --list-formats-ext."""
     try:
-        result = subprocess.run(
+        result = _run_command(
             ["v4l2-ctl", "-d", device_path, "--list-formats-ext"],
-            capture_output=True,
-            text=True,
             timeout=10,
+            cancel_check=cancel_check,
         )
         if result.returncode != 0:
             return []
@@ -277,6 +294,54 @@ def _query_modes(device_path: str) -> list[VideoMode]:
         return []
     except FileNotFoundError:
         return _default_uvc_modes()
+
+
+def _run_command(
+    args: list[str],
+    timeout: float,
+    cancel_check: CancelCheck | None = None,
+) -> subprocess.CompletedProcess:
+    """Run and reap one command while observing cooperative cancellation."""
+
+    _check_cancel(cancel_check)
+    process = subprocess.Popen(
+        args,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    deadline = time.monotonic() + max(0.0, timeout)
+    while True:
+        if cancel_check is not None and cancel_check():
+            _terminate_process(process)
+            raise InterruptedError("camera discovery cancelled")
+        returncode = process.poll()
+        if returncode is not None:
+            stdout, stderr = process.communicate()
+            return subprocess.CompletedProcess(
+                args,
+                returncode,
+                stdout,
+                stderr,
+            )
+        if time.monotonic() >= deadline:
+            _terminate_process(process)
+            raise subprocess.TimeoutExpired(args, timeout)
+        time.sleep(min(0.05, max(0.0, deadline - time.monotonic())))
+
+
+def _terminate_process(process) -> None:
+    process.terminate()
+    try:
+        process.communicate(timeout=0.25)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.communicate()
+
+
+def _check_cancel(cancel_check: CancelCheck | None) -> None:
+    if cancel_check is not None and cancel_check():
+        raise InterruptedError("camera discovery cancelled")
 
 
 def _query_device_info_from_sysfs(device_path: str) -> tuple[str, str, str, bool] | None:

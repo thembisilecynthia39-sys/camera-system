@@ -5,15 +5,21 @@ from __future__ import annotations
 
 import logging
 import time
+from dataclasses import replace
 from pathlib import Path
 from queue import Empty, Queue
-from threading import Event, RLock
+from threading import Event, Lock, RLock
+from typing import Callable
 
 from multiwebcam.pipeline.alignment import AlignmentMonitor, AlignmentStats
 from multiwebcam.pipeline.producer import FrameProducer, QueueBundle
 from multiwebcam.pipeline.report import CameraStats
 from multiwebcam.profiles.settings import RecordingSettings
-from multiwebcam.recording.recorder import FrameRecorder, RecordingResult
+from multiwebcam.recording.recorder import (
+    FrameRecorder,
+    RecordingDrainTimeout,
+    RecordingResult,
+)
 from multiwebcam.sources.config import FrameSourceConfig, FrameSourceStatus
 from multiwebcam.sources.device import FrameSource
 from multiwebcam.sources.frame_packet import FramePacket
@@ -66,7 +72,8 @@ class CaptureSession:
         sources: list[FrameSource],
         enable_monitoring: bool = True,
         monitor_interval_seconds: float = 2.0,
-        recording_buffer_seconds: float = 6.0,
+        recording_buffer_seconds: float = 0.75,
+        recording_buffer_bytes_per_camera: int = 96 * 1024 * 1024,
         alignment_window_seconds: float = 3.0,
         recording_settings: RecordingSettings | None = None,
     ) -> None:
@@ -87,6 +94,9 @@ class CaptureSession:
         self.enable_monitoring = enable_monitoring
         self.monitor_interval_seconds = monitor_interval_seconds
         self.recording_buffer_seconds = recording_buffer_seconds
+        self.recording_buffer_bytes_per_camera = max(
+            1, int(recording_buffer_bytes_per_camera)
+        )
         self.alignment_window_seconds = alignment_window_seconds
         self.recording_settings = recording_settings or RecordingSettings()
 
@@ -105,6 +115,8 @@ class CaptureSession:
 
         self._running = False
         self._is_recording = Event()  # Shared flag for producers
+        self._recording_overflow = Event()
+        self._recording_gate = Lock()
         self._frame_recorder: FrameRecorder | None = None  # Created on start_recording()
         self._recording_device_paths: list[str] = []
         self._startup_errors: dict[str, str] = {}
@@ -114,7 +126,14 @@ class CaptureSession:
         return max(1, int(getattr(source, "_config").fps))
 
     def _recording_queue_capacity(self, source: FrameSource) -> int:
-        return max(1, int(self.recording_buffer_seconds * self._source_fps(source)))
+        config = getattr(source, "_config")
+        width, height = config.resolution
+        frame_bytes = max(1, int(width) * int(height) * 3)
+        time_capacity = max(
+            1, int(self.recording_buffer_seconds * self._source_fps(source))
+        )
+        byte_capacity = max(1, self.recording_buffer_bytes_per_camera // frame_bytes)
+        return min(time_capacity, byte_capacity)
 
     def _alignment_queue_capacity(self, source: FrameSource) -> int:
         fps = self._source_fps(source)
@@ -166,6 +185,8 @@ class CaptureSession:
                 source,
                 queues=queues,
                 is_recording=self._is_recording,
+                recording_overflow=self._recording_overflow,
+                recording_gate=self._recording_gate,
             )
             self._producers[path] = producer
 
@@ -179,26 +200,50 @@ class CaptureSession:
         self._running = True
         logger.info("Capture session started")
 
-    def stop(self) -> None:
+    def stop(self, timeout: float = 5.0) -> bool:
         """Stop all producers."""
         if not self._running:
-            return
+            return True
 
         logger.info("Stopping capture session")
+        deadline = time.monotonic() + max(0.0, timeout)
+        all_stopped = True
 
-        # Stop recording if active
-        if self._is_recording.is_set():
-            self.stop_recording()
+        # A stuck encoder must not prevent camera readers and device handles
+        # from receiving their own stop signals.
+        if self._is_recording.is_set() or self._frame_recorder is not None:
+            try:
+                self.stop_recording(
+                    drain_timeout=max(0.0, deadline - time.monotonic())
+                )
+            except RecordingDrainTimeout:
+                logger.exception("Recording did not drain before shutdown deadline")
+                all_stopped = False
+            except Exception:
+                logger.exception("Recording finalization failed during session shutdown")
+                all_stopped = False
 
-        # Stop alignment monitor
-        self._stop_alignment_monitor()
+        all_stopped = self._stop_alignment_monitor(
+            max(0.0, deadline - time.monotonic())
+        ) and all_stopped
 
-        # Stop all producers
+        # Signal every camera first. Waiting on producers one by one before
+        # signalling the next one can leave the final USB reader blocked for
+        # almost the entire shared shutdown deadline.
         for producer in self._producers.values():
-            producer.stop()
+            producer.request_stop()
 
+        # Then wait for each reader to release its own VideoCapture.
+        for producer in self._producers.values():
+            remaining = max(0.0, deadline - time.monotonic())
+            all_stopped = producer.wait_stopped(remaining) and all_stopped
+
+        if not all_stopped:
+            logger.error("Capture session still owns producer threads after timeout")
+            return False
         self._running = False
         logger.info("Capture session stopped")
+        return True
 
     def pause_producer(self, device_path: str) -> None:
         """Pause a specific producer by device path."""
@@ -232,18 +277,39 @@ class CaptureSession:
                 producer.pause()
 
     def resume_all(self) -> None:
-        """Resume all producers."""
+        """Resume paused producers and restart sources released for GPU handoff."""
         with self._state_lock:
             producers = list(self._producers.values())
         for producer in producers:
-            producer.resume()
+            if producer.is_running:
+                producer.resume()
+            else:
+                producer.start()
+        self._start_alignment_monitor()
+
+    def suspend_all(self, timeout: float = 3.0) -> bool:
+        """Stop every source and release capture/decode pipelines."""
+        deadline = time.monotonic() + max(0.0, timeout)
+        with self._state_lock:
+            producers = list(self._producers.values())
+        for producer in producers:
+            producer.request_stop()
+        monitoring_stopped = self._stop_alignment_monitor(
+            max(0.0, deadline - time.monotonic())
+        )
+        stopped = monitoring_stopped
+        for producer in producers:
+            stopped = producer.wait_stopped(
+                max(0.0, deadline - time.monotonic())
+            ) and stopped
+        return stopped
 
     @property
     def producers_healthy(self) -> bool:
         """True when every configured producer thread is alive."""
         with self._state_lock:
             producers = list(self._producers.values())
-        return bool(producers) and all(producer.is_running for producer in producers)
+        return bool(producers) and all(producer.is_ready for producer in producers)
 
     @property
     def startup_errors(self) -> dict[str, str]:
@@ -254,9 +320,25 @@ class CaptureSession:
     def all_producers_paused(self) -> bool:
         with self._state_lock:
             producers = list(self._producers.values())
-        return bool(producers) and all(producer.is_paused for producer in producers)
+        return bool(producers) and all(
+            producer.is_paused or not producer.is_running
+            for producer in producers
+        )
 
-    def add_source(self, source: FrameSource) -> FrameSourceStatus:
+    @property
+    def all_producers_quiesced(self) -> bool:
+        """True when camera readers and hardware decode pipelines are released."""
+        with self._state_lock:
+            producers = list(self._producers.values())
+        return bool(producers) and all(
+            not producer.is_running for producer in producers
+        )
+
+    def add_source(
+        self,
+        source: FrameSource,
+        cancel_check: Callable[[], bool] | None = None,
+    ) -> FrameSourceStatus:
         """Add and start a source while the session is running."""
         if self._is_recording.is_set():
             raise CaptureSessionError("Cannot add source while recording")
@@ -266,7 +348,14 @@ class CaptureSession:
         if already_active:
             raise CaptureSessionError(f"Source already active: {source.device_path}")
 
-        status = source.start()
+        status = (
+            source.start()
+            if cancel_check is None
+            else source.start(cancel_check=cancel_check)
+        )
+        if cancel_check is not None and cancel_check():
+            source.stop()
+            raise InterruptedError("camera startup cancelled")
 
         queues = QueueBundle(
             display=Queue(maxsize=1),
@@ -277,6 +366,8 @@ class CaptureSession:
             source,
             queues=queues,
             is_recording=self._is_recording,
+            recording_overflow=self._recording_overflow,
+            recording_gate=self._recording_gate,
         )
 
         with self._state_lock:
@@ -302,16 +393,21 @@ class CaptureSession:
         self._stop_alignment_monitor()
 
         with self._state_lock:
-            producer = self._producers.pop(device_path, None)
+            producer = self._producers.get(device_path)
             if producer is None:
                 raise CaptureSessionError(f"No producer found for device path: {device_path}")
+        if not producer.stop():
+            self._start_alignment_monitor()
+            raise CaptureSessionError(
+                f"Producer did not stop; source remains managed: {device_path}"
+            )
+        with self._state_lock:
+            self._producers.pop(device_path, None)
             self._queue_bundles.pop(device_path, None)
             self._monitoring_last_frame_count.pop(device_path, None)
             if self._latest_stats is not None:
                 self._latest_stats.pop(device_path, None)
             self.sources = [source for source in self.sources if source.device_path != device_path]
-
-        producer.stop()
 
         self._start_alignment_monitor()
 
@@ -348,7 +444,10 @@ class CaptureSession:
 
         # Stop old producer
         old_producer = self._producers[device_path]
-        old_producer.stop()
+        if not old_producer.stop():
+            raise CaptureSessionError(
+                f"Producer did not stop; source was not replaced: {device_path}"
+            )
 
         # Drain stale display frame
         queues = self._queue_bundles[device_path]
@@ -366,6 +465,8 @@ class CaptureSession:
             new_source,
             queues=queues,
             is_recording=self._is_recording,
+            recording_overflow=self._recording_overflow,
+            recording_gate=self._recording_gate,
         )
 
         # Replace producer
@@ -452,6 +553,27 @@ class CaptureSession:
             queues = {path: self._queue_bundles[path] for path in device_paths if path in self._queue_bundles}
         return {path: bundle.recording.qsize() for path, bundle in queues.items()}
 
+    def pipeline_metrics(self) -> dict[str, object]:
+        """Snapshot queue/backpressure metrics without blocking producers."""
+        with self._state_lock:
+            bundles = dict(self._queue_bundles)
+            producers = dict(self._producers)
+        return {
+            "recording_queue_depths": {
+                path: bundle.recording.qsize()
+                for path, bundle in bundles.items()
+            },
+            "recording_queue_capacities": {
+                path: bundle.recording.maxsize
+                for path, bundle in bundles.items()
+            },
+            "recording_frames_dropped": {
+                path: producer.recording_frames_dropped
+                for path, producer in producers.items()
+            },
+            "recording_overflowed": self._recording_overflow.is_set(),
+        }
+
     def start_recording(self, output_dir: Path, cam_ids: dict[str, int] | None = None) -> None:
         """
         Begin recording all cameras to output_dir.
@@ -465,7 +587,7 @@ class CaptureSession:
         Raises:
             CaptureSessionError: If already recording
         """
-        if self._is_recording.is_set():
+        if self._is_recording.is_set() or self._frame_recorder is not None:
             raise CaptureSessionError("Already recording")
 
         if not self._running:
@@ -499,23 +621,30 @@ class CaptureSession:
                     except Empty:
                         break
 
-        self._recording_device_paths = list(recording_queues.keys())
-
-        # Create recorder
-        self._frame_recorder = FrameRecorder(
+        # Start the recorder before publishing recording state. If directory
+        # creation or encoder startup fails, producers must not feed queues
+        # that have no active consumer.
+        recorder = FrameRecorder(
             recording_queues=recording_queues,
             output_dir=output_dir,
             cam_ids=cam_ids,
             settings=self.recording_settings,
         )
 
-        # Start recording (order matters: flag first, then recorder)
-        self._is_recording.set()
-        self._frame_recorder.start()
+        self._recording_overflow.clear()
+        recorder.start()
+
+        with self._recording_gate:
+            self._frame_recorder = recorder
+            self._recording_device_paths = list(recording_queues.keys())
+            self._is_recording.set()
 
         logger.info(f"Recording started to {output_dir}")
 
-    def stop_recording(self) -> RecordingResult | None:
+    def stop_recording(
+        self,
+        drain_timeout: float = 10.0,
+    ) -> RecordingResult | None:
         """
         Stop recording and finalize files.
 
@@ -524,10 +653,10 @@ class CaptureSession:
 
         The recording process:
         1. Clear is_recording flag (producers stop pushing)
-        2. Send sentinel (None) to each recording queue
+        2. Signal encoder control events
         3. Recorder drains queues and finalizes MP4 + timestamps.csv
         """
-        if not self._is_recording.is_set():
+        if not self._is_recording.is_set() and self._frame_recorder is None:
             logger.warning("Not recording, nothing to stop")
             return None
 
@@ -538,17 +667,23 @@ class CaptureSession:
 
         logger.info("Stopping recording...")
 
-        # Clear flag first (producers stop pushing)
-        self._is_recording.clear()
-
-        # Send sentinels only to queues that were recording
-        for device_path in self._recording_device_paths:
-            self._queue_bundles[device_path].recording.put(None)
+        # Control signalling is separate from bounded data queues, so stopping
+        # cannot block even if every recording queue is full.
+        with self._recording_gate:
+            self._is_recording.clear()
         self._recording_device_paths = []
 
         # Stop recorder (drains queues, finalizes files)
-        result = self._frame_recorder.stop()
+        result = self._frame_recorder.stop(drain_timeout=drain_timeout)
         self._frame_recorder = None
+        if self._recording_overflow.is_set():
+            result = replace(
+                result,
+                errors=[
+                    *result.errors,
+                    "Recording aborted: encoder queue capacity was exceeded",
+                ],
+            )
 
         logger.info(
             f"Recording stopped: {result.duration_seconds:.1f}s, {sum(result.frames_per_camera.values())} frames"
@@ -557,9 +692,18 @@ class CaptureSession:
         return result
 
     @property
+    def has_pending_recording(self) -> bool:
+        return self._frame_recorder is not None
+
+    @property
     def is_recording(self) -> bool:
         """True if currently recording."""
         return self._is_recording.is_set()
+
+    @property
+    def recording_overflowed(self) -> bool:
+        """True when encoder backpressure aborted the current recording."""
+        return self._recording_overflow.is_set()
 
     @property
     def active_device_paths(self) -> list[str]:
@@ -578,10 +722,12 @@ class CaptureSession:
         )
         self._alignment_monitor.start()
 
-    def _stop_alignment_monitor(self) -> None:
+    def _stop_alignment_monitor(self, timeout: float = 5.0) -> bool:
         if self._alignment_monitor is not None:
-            self._alignment_monitor.stop()
+            if not self._alignment_monitor.stop(timeout):
+                return False
             self._alignment_monitor = None
+        return True
 
     def _restart_alignment_monitor(self) -> None:
         if not self._running:

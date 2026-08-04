@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+from threading import local
 
 import cv2
 import numpy as np
@@ -26,6 +27,8 @@ class QualityLevel(str, Enum):
 # itself.  Keep this shared guard consistent across heuristic, YOLO and UI
 # rendering paths so a large false positive cannot become a giant overlay.
 MAX_PRIMARY_OBJECT_AREA_RATIO = 0.55
+_QUALITY_MAX_DIMENSION = 640
+_quality_thread_state = local()
 
 
 @dataclass(frozen=True)
@@ -122,6 +125,16 @@ def evaluate_frame(
         )
 
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    source_height, source_width = gray.shape
+    height, width = source_height, source_width
+    longest = max(height, width)
+    if longest > _QUALITY_MAX_DIMENSION:
+        scale = _QUALITY_MAX_DIMENSION / float(longest)
+        gray = cv2.resize(
+            gray,
+            (max(1, round(width * scale)), max(1, round(height * scale))),
+            interpolation=cv2.INTER_AREA,
+        )
     sharpness = float(cv2.Laplacian(gray, cv2.CV_64F).var())
     brightness = float(gray.mean())
     underexposed_pct = float((gray < 10).mean() * 100.0)
@@ -133,6 +146,25 @@ def evaluate_frame(
     feature_score = _score_features(feature_count)
     if object_region is None and detect_when_missing:
         object_region = _detect_primary_object(gray)
+        if (
+            object_region is not None
+            and (gray.shape[1], gray.shape[0])
+            != (source_width, source_height)
+        ):
+            object_region = ObjectRegion(
+                x=round(object_region.x * source_width / gray.shape[1]),
+                y=round(object_region.y * source_height / gray.shape[0]),
+                width=round(
+                    object_region.width * source_width / gray.shape[1]
+                ),
+                height=round(
+                    object_region.height * source_height / gray.shape[0]
+                ),
+                area_ratio=object_region.area_ratio,
+                centeredness=object_region.centeredness,
+                fill_ratio=object_region.fill_ratio,
+                confidence=object_region.confidence,
+            )
     object_score = _score_object_region(object_region)
     score_percent = 100.0 * (
         0.25 * sharpness_score
@@ -279,7 +311,10 @@ def evaluate_capture_set(
 
 
 def _count_orb_features(gray: np.ndarray) -> int:
-    orb = cv2.ORB_create(nfeatures=1000)
+    orb = getattr(_quality_thread_state, "orb", None)
+    if orb is None:
+        orb = cv2.ORB_create(nfeatures=1000)
+        _quality_thread_state.orb = orb
     keypoints = orb.detect(gray, None)
     return len(keypoints)
 

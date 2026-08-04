@@ -3,8 +3,13 @@ from q3dviewer.custom_items.cloud_item import CloudItem
 from q3dviewer.custom_items.cloud_io_item import CloudIOItem
 from q3dviewer.custom_items.cloud_sort_item import CloudSortItem
 from q3dviewer.custom_items.gaussian_item import GaussianItem
+from q3dviewer.custom_items.gaussian_gpu_data import GaussianGpuData
+from q3dviewer.custom_items.gaussian_sphere_pass import GaussianSpherePass
+from q3dviewer.custom_items.gaussian_splat_pass import GaussianSplatPass
+from q3dviewer.custom_items.gaussian_render_controller import GaussianRenderController
 from q3dviewer.custom_items.frame_item import FrameItem
 from q3dviewer.custom_items.grid_item import GridItem
+from q3dviewer.custom_items.scene_overlay_item import SceneOverlayItem
 from q3dviewer.custom_items.text_item import Text2DItem
 from q3dviewer.custom_items.image_item import ImageItem
 from q3dviewer.custom_items.line_item import LineItem

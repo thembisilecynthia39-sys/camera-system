@@ -53,7 +53,10 @@ class SourceTile(QFrame):
         self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
 
         # Frame display
-        self._frame_label = AspectRatioLabel(fill_mode="cover")
+        self._frame_label = AspectRatioLabel(
+            fill_mode="cover",
+            smooth_scaling=False,
+        )
         self._frame_label.setMinimumSize(120, 68)
 
         # Header: state, source identity, resolution and actions.

@@ -1,0 +1,20 @@
+schema_version: 1
+language: zh_CN
+log_level: INFO
+
+# 必须填写 Jetson 能访问的 WSL/服务器地址，不能填写 127.0.0.1。
+wsl_service_url: http://192.168.1.100:8000
+
+# 相对路径以发布目录为基准；也可以填写绝对路径。
+capture_root: captures
+transfer_staging_root: runtime/staging
+result_root: result
+viewer_root: 3DGSviewer/q3dviewer
+
+upload_timeout_seconds: 300
+request_timeout_seconds: 30
+status_poll_interval_seconds: 2.0
+reconstruction_timeout_seconds: 21600
+download_timeout_seconds: 600
+max_ply_size_bytes: 2147483648
+start_maximized: true

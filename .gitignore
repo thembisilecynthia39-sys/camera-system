@@ -32,6 +32,8 @@ dist/
 /captures/
 /recordings/
 /result/
+/runtime/
+/multiwebcam.toml
 /multiwebcam/captures/
 /multiwebcam/recordings/
 /multiwebcam/artifacts/

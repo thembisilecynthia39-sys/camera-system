@@ -14,10 +14,17 @@ class AspectRatioLabel(QLabel):
     and any overflow is center-cropped.
     """
 
-    def __init__(self, parent=None, *, fill_mode: str = "contain"):
+    def __init__(
+        self,
+        parent=None,
+        *,
+        fill_mode: str = "contain",
+        smooth_scaling: bool = True,
+    ):
         super().__init__(parent)
         self._original_pixmap: QPixmap | None = None
         self._fill_mode = fill_mode
+        self._smooth_scaling = smooth_scaling
         self.setObjectName("videoPreview")
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.setMinimumSize(120, 68)
@@ -54,10 +61,15 @@ class AspectRatioLabel(QLabel):
                 getattr(Qt, "KeepAspectRatioByExpanding", Qt.AspectRatioMode.KeepAspectRatio),
             )
 
+        transform_mode = (
+            Qt.TransformationMode.SmoothTransformation
+            if self._smooth_scaling
+            else Qt.TransformationMode.FastTransformation
+        )
         scaled = self._original_pixmap.scaled(
             self.size(),
             aspect_mode,
-            Qt.TransformationMode.SmoothTransformation,
+            transform_mode,
         )
         if self._fill_mode == "cover" and (scaled.width() > self.width() or scaled.height() > self.height()):
             x = max(0, (scaled.width() - self.width()) // 2)
